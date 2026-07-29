@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/). Public
 compatibility covers documented CLI behavior, exit codes, the versioned
 `tmt.json` registry format, and the JSON output protocol.
 
+## [0.1.0a4] - 2026-07-29
+
+### Added
+
+- The note-habit machinery, three layers deep (see the new
+  [integration contract](docs/contracts/integration-v1.md)):
+  - `tmt integration print agents`: the canonical versioned AGENTS.md
+    habit fragment (fragment_version 1, verify-capped at 50 words).
+  - `tmt agents [--write]`: report the fragment's status in this repo's
+    AGENTS.md (`installed | stale | absent | no-agents-file`) or install
+    it idempotently between owned `<!-- tmt:agents v1 -->` markers;
+    `tmt init --agents` does the same during init. A new `tmt check`
+    gate fails a present marker block that is stale or malformed —
+    a repo without the file or markers is never a failure.
+  - `tmt context`: SessionStart hook payload — the repo's tool list and
+    noted candidates, capped at 40 lines. Fail-open by contract: every
+    error path exits 0 and never emits garbage.
+  - `tmt integration plan|install|check|uninstall claude [--user]` and
+    `tmt integration print hook claude`: a reversible, manifest-owned
+    Claude Code `SessionStart` hook in the user-level `settings.json`
+    (surgical merge; unrelated settings and hook groups preserved).
+- Stable error code `drift` (exit 3): an integration's owned entry was
+  edited externally; tmt refuses to overwrite or remove it.
+
 ## [0.1.0a3] - 2026-07-29
 
 ### Added

@@ -10,6 +10,7 @@ import sys
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_MAX_WORDS = 150
+FRAGMENT_MAX_WORDS = 50
 
 
 def run(
@@ -43,6 +44,21 @@ def check_bootstrap() -> None:
     if words > AGENTS_MAX_WORDS:
         raise RuntimeError(
             f"AGENTS.md has {words} words; maximum is {AGENTS_MAX_WORDS}"
+        )
+
+
+def check_fragment() -> None:
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, os.fspath(REPO_ROOT / "src"))
+    try:
+        from tmt.agentsmd import FRAGMENT
+    finally:
+        sys.path.pop(0)
+    words = len(FRAGMENT.split())
+    if words > FRAGMENT_MAX_WORDS:
+        raise RuntimeError(
+            f"AGENTS.md fragment has {words} words; "
+            f"maximum is {FRAGMENT_MAX_WORDS}"
         )
 
 
@@ -102,6 +118,7 @@ def main() -> int:
         return 1
     checks = (
         check_bootstrap,
+        check_fragment,
         check_python,
         check_tracked_paths,
         check_tests,

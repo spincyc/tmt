@@ -47,6 +47,7 @@ def run_tmt(
     cwd: Path,
     *arguments: str,
     env: dict[str, str] | None = None,
+    stdin_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.fspath(SRC_DIR)
@@ -58,6 +59,7 @@ def run_tmt(
         cwd=os.fspath(cwd),
         env=environment,
         text=True,
+        input=stdin_text,
         capture_output=True,
     )
 

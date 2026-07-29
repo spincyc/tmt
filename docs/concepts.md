@@ -96,6 +96,21 @@ or Python modules, both declared internal.
 aiq missing or failing degrades exactly two commands (`note`, `candidates`)
 to `aiq-unavailable`; everything else still works.
 
+## Forming the habit
+
+The loop below only runs if agents remember it exists, and timing works
+against them: guidance loads at session start, while the noteworthy moment —
+"I just re-derived something" — happens mid-session. So the habit's presence
+must be ambient, in three thin layers. A canonical AGENTS.md fragment
+(`tmt integration print agents`) states the habit in under 50 words; `tmt
+agents --write` installs it between owned markers and `tmt check` fails when
+the installed copy goes stale, so the reminder in every repo stays current;
+and a Claude Code `SessionStart` hook (`tmt integration install claude`)
+runs `tmt context` to put the repo's tool list and noted candidates directly
+into session context — the registry is visible before the first chance to
+re-derive. Each layer is optional and reversible; see the
+[integration contract](contracts/integration-v1.md).
+
 ## The loop
 
 1. An agent notices re-derivation → `tmt note <slug> --note "context"`.

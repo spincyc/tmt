@@ -8,7 +8,9 @@ generated tool — but this document is self-contained.
 
 ## Common rules
 
-- Every command accepts `--json` after the subcommand. With `--json`, success
+- Every command except `tmt context` accepts `--json` after the subcommand
+  (`context` emits session context that is injected, not parsed, and is
+  plain text by design). With `--json`, success
   is exactly one compact, key-sorted UTF-8 JSON object followed by one newline
   on standard output; nothing else is written to standard output.
 - Success uses standard output only. Failure uses standard error only.
@@ -31,7 +33,9 @@ the nearest directory at or above the working directory containing `tmt.json`,
 and fail with `no-registry` (exit 3) when none exists. `tmt init` writes into
 the current directory unconditionally. `tmt note` and `tmt candidates` do not
 require a registry; when one is found, its root becomes the working directory
-passed to aiq for scope resolution.
+passed to aiq for scope resolution. `tmt integration` never touches the
+registry, and `tmt context` resolves it the same way but silently exits 0
+instead of failing when there is none.
 
 ## Command results
 
@@ -39,7 +43,14 @@ The tables list fields in addition to top-level `v`.
 
 | Command | Success fields |
 |---|---|
-| `init --json` | `status: "initialized"`, absolute `path`, `stanza` |
+| `init --json` | `status: "initialized"`, absolute `path`, `stanza`; with `--agents` also `agents` (the `agents --write` result) |
+| `agents --json` | `status`, absolute `path`, `fragment_version`; with `--write` also `changed`, `previous` |
+| `integration print agents --json` | `fragment`, `fragment_version` |
+| `integration print hook claude --json` | `fragment` (the settings.json hooks fragment object) |
+| `integration plan claude --json` | `changed`, `entry`, `settings`, `status` |
+| `integration install claude --json` | `status: "installed"`, `changed`, `entry`, `manifest`, `settings` |
+| `integration check claude --json` | `status: "ok"`, `"absent"`, or `"drifted"`, `settings` |
+| `integration uninstall claude --json` | `status: "uninstalled"`, `changed`, `removed`, `settings` |
 | `new ID --json` | `id`, `lang`, repo-relative `path` and `test_path`, `stage: "draft"` |
 | `list --json` | `tools`: array of `{id, purpose, stage}`, id ascending |
 | `show ID --json` | `id`, `entry`, `help`, `doc` |
@@ -53,13 +64,68 @@ The tables list fields in addition to top-level `v`.
 ## init
 
 ```text
-tmt init [--json]
+tmt init [--agents] [--json]
 ```
 
 Creates an empty registry (`{"tools": {}, "v": 1}`) in the current directory.
 Human output is the two-line `AGENTS.md` stanza; the JSON `stanza` field is
 the same two strings as an array. An existing `tmt.json` is `already-exists`
+(exit 3). With `--agents` it also installs the AGENTS.md fragment block
+exactly as `tmt agents --write` would (the human output gains an
+`AGENTS.md: installed` line; JSON gains `agents`).
+
+## agents
+
+```text
+tmt agents [--write] [--json]
+```
+
+Reports the habit fragment's status in this repo's `AGENTS.md`:
+`installed`, `stale` (block differs from the current render, malformed
+included), `absent` (file without markers), or `no-agents-file`. With
+`--write`, creates `AGENTS.md` or idempotently inserts/replaces the owned
+marker block (`changed`, `previous` report what happened); a malformed block
+(begin marker without end marker) is refused with `check-failed` (exit 3).
+Human output is the status word, or `AGENTS.md: PREVIOUS -> installed` /
+`AGENTS.md already installed` with `--write`. Fragment text, marker grammar,
+and the matching `tmt check` gate are in
+[integration-v1.md](integration-v1.md). No registry is `no-registry`
 (exit 3).
+
+## context
+
+```text
+tmt context
+```
+
+The SessionStart hook payload: plain text only, no `--json`. Prints the
+repo's tool list and noted-candidate counts, capped at 40 lines; prints
+nothing without a registry. Consumes and ignores stdin. Always exits 0 —
+fail-open on every error path is a hard requirement of
+[integration-v1.md](integration-v1.md).
+
+## integration
+
+```text
+tmt integration print agents [--json]
+tmt integration print hook claude [--json]
+tmt integration {plan,install,check,uninstall} claude [--user] [--json]
+```
+
+`print agents` emits the canonical AGENTS.md fragment (`fragment`,
+`fragment_version`); `print hook claude` emits the settings.json hooks
+fragment for externally managed configuration. Both change nothing.
+
+The lifecycle commands manage one tmt-owned `SessionStart` hook entry in the
+user-level Claude Code `settings.json` (`--user` is the default and only
+scope) with an ownership manifest: `plan` previews without writing,
+`install` is idempotent (`changed: false` when already installed), `check`
+reports `ok` (exit 0) / `absent` / `drifted` (exit 1, status on stdout, no
+error envelope), and `uninstall` removes only the unmodified owned entry
+plus any containers it created. An externally edited owned entry is refused
+with `drift` (exit 3) by `install` and `uninstall`. Entry shape, manifest
+format, merge guarantees, and drift semantics are in
+[integration-v1.md](integration-v1.md).
 
 ## new
 

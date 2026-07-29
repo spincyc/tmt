@@ -82,11 +82,34 @@ target so a stale registry is a build failure.
 | Count recorded candidates | `tmt candidates` |
 | Copy a tool in, stamped with provenance | `tmt vendor <source-repo> <id>` |
 | Lint and copy a tool out | `tmt adopt <id> --to <dest-repo>` |
+| Report or install the AGENTS.md habit fragment | `tmt agents [--write]` |
+| Print the canonical fragment or hook fragment | `tmt integration print agents\|hook claude` |
+| Manage the Claude Code session hook | `tmt integration plan\|install\|check\|uninstall claude` |
+| Emit session context (the hook payload) | `tmt context` |
 | See command flags | `tmt COMMAND --help` |
 
-Every command accepts `--json` and speaks the [CLI JSON protocol
+Every command except `tmt context` (plain text by design) accepts `--json`
+and speaks the [CLI JSON protocol
 v1](docs/contracts/cli-v1.md). `tmt note` and `tmt candidates` shell out to
 the [aiq](../aiq) CLI; everything else works without aiq installed.
+
+## Session integration
+
+The note habit needs ambient presence: guidance loads at session start, but
+the noteworthy moment is mid-session. Three layers keep it present, each
+optional and reversible:
+
+| Layer | Surface | Command |
+|---|---|---|
+| Fragment | Canonical 4-line AGENTS.md text, versioned | `tmt integration print agents` |
+| Marker block | Owned block in the repo's AGENTS.md, gated by `tmt check` | `tmt agents --write` (or `tmt init --agents`) |
+| Session hook | Claude Code `SessionStart` hook running `tmt context` | `tmt integration install claude` |
+
+`tmt context` prints the repo's tool list and noted candidates at session
+start and is fail-open by contract — it never breaks a session. The hook
+lifecycle is manifest-owned and drift-safe: install is idempotent, uninstall
+removes only the unmodified owned entry, and every unrelated setting is
+preserved. See the [integration contract](docs/contracts/integration-v1.md).
 
 ## Documentation
 
@@ -98,6 +121,7 @@ the [aiq](../aiq) CLI; everything else works without aiq installed.
 | [Registry v1](docs/contracts/registry-v1.md) | `tmt.json` format, fields, and semantic rules |
 | [Errors](docs/contracts/errors.md) | Stable codes and exit categories |
 | [Vendoring v1](docs/contracts/vendoring-v1.md) | vendor/adopt semantics, origin stamps, drift |
+| [Integration v1](docs/contracts/integration-v1.md) | AGENTS.md fragment, marker block, session hook lifecycle |
 
 The normative registry schema is
 [`schemas/tmt-v1.schema.json`](schemas/tmt-v1.schema.json).

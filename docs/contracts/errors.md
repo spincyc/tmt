@@ -31,10 +31,10 @@ wording is not a compatibility surface.
 
 | Exit | Category | Codes |
 |---:|---|---|
-| 0 | Success, including `tmt check` with warnings only | — |
-| 1 | `tmt check` found failures (reported on stdout, no error envelope) | — |
+| 0 | Success, including `tmt check` with warnings only, and every `tmt context` run | — |
+| 1 | `tmt check` found failures; `tmt integration check` found the hook absent or drifted (reported on stdout, no error envelope) | — |
 | 2 | Invalid invocation or input value | `usage` |
-| 3 | Repository, registry, or environment state rejects the operation | `not-found`, `already-exists`, `no-registry`, `check-failed`, `aiq-unavailable`, `portability` |
+| 3 | Repository, registry, or environment state rejects the operation | `not-found`, `already-exists`, `no-registry`, `check-failed`, `aiq-unavailable`, `portability`, `drift` |
 | 70 | Unexpected tmt implementation defect | `internal` |
 
 The exit code is the coarse recovery category; `code` is the precise branch.
@@ -48,13 +48,16 @@ Automation should use both and must not parse `error`.
 | `not-found` | The named tool has no registry entry, or its `tools/<id>` file is missing |
 | `already-exists` | `init` found an existing `tmt.json`; `new` found the id registered or the file present |
 | `no-registry` | No `tmt.json` at or above the working directory, or in a vendor source / adopt destination |
-| `check-failed` | A command had to load `tmt.json` and it does not parse or validate; or `tmt stage` refused a promotion (stable gates failed) or a demotion (a stable tool requires the target) |
+| `check-failed` | A command had to load `tmt.json` and it does not parse or validate; `tmt stage` refused a promotion (stable gates failed) or a demotion (a stable tool requires the target); `tmt agents --write` found a malformed marker block; or a managed integration settings or manifest file does not parse or validate |
 | `aiq-unavailable` | aiq is not on `PATH`, exited nonzero, timed out, or returned unusable output |
 | `portability` | `adopt` refusals: a non-stable tool, hardcoded absolute paths, or unpromoted dependencies |
+| `drift` | The integration's owned settings entry was edited or removed externally; `install` and `uninstall` refuse to overwrite or remove it (see [integration-v1.md](integration-v1.md)) |
 | `internal` | An uncategorized implementation defect escaped normal handling |
 
 `check-failed` is raised by commands other than `tmt check` (exit 3); `tmt
 check` itself never uses the error envelope for gate findings — it reports
-them as `FAIL` lines (or the JSON `failures` array) and exits 1. `tmt note`
+them as `FAIL` lines (or the JSON `failures` array) and exits 1, and `tmt
+integration check` reports its status the same way. `tmt note`
 and `tmt candidates` are the only commands that can return
-`aiq-unavailable`; every other command works without aiq.
+`aiq-unavailable`; every other command works without aiq (`tmt context`
+reads aiq too, but fails open to silence — it never errors at all).

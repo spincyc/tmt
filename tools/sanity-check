@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+missing_commands=
+
+check_command() {
+  command_name=$1
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    missing_commands="${missing_commands}${missing_commands:+
+}${command_name}"
+  fi
+}
+
+check_command git
+check_command python3
+
+if [ -n "$missing_commands" ]; then
+  printf 'Missing required commands:\n' >&2
+  printf '%s\n' "$missing_commands" | sed 's/^/  /' >&2
+  exit 1
+fi
+
+python3 - <<'PY'
+import sys
+
+if sys.version_info[:2] < (3, 11):
+    raise SystemExit(
+        f"Python 3.11+ is required; found {sys.version.split()[0]}"
+    )
+PY
+
+printf 'Sanity check passed.\n'

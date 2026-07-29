@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tmt registry v1",
+  "description": "Normative schema for tmt.json, the committed repo-root tool registry. Each key under \"tools\" is a tool id and must equal the executable filename tools/<id>.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tools", "v"],
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Registry format version."
+    },
+    "tools": {
+      "type": "object",
+      "description": "One manifest entry per tool, keyed by tool id.",
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/tool"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "stage", "usage"],
+      "properties": {
+        "purpose": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "One-line discovery summary; hard-capped at 80 characters."
+        },
+        "usage": {
+          "type": "string",
+          "description": "Invocation synopsis, e.g. \"tools/<id> [--json] [ARG]\"."
+        },
+        "stage": {
+          "enum": ["draft", "stable"],
+          "description": "Lifecycle stage; stable adds test, portability, and dependency gates."
+        },
+        "lang": {
+          "type": "string",
+          "minLength": 1,
+          "default": "python",
+          "description": "Implementation language: \"python\" (default), \"sh\", or a recorded exception."
+        },
+        "json": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the tool supports --json per cli-v1."
+        },
+        "mutates": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the tool changes state outside its own output."
+        },
+        "idempotent": {
+          "type": "boolean",
+          "default": true,
+          "description": "True when repeating the tool is safe."
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Sibling tool ids this tool executes; must resolve and stay acyclic."
+        },
+        "origin": {
+          "default": "local",
+          "description": "\"local\" for tools born here; a provenance stamp for vendored copies.",
+          "oneOf": [
+            {
+              "const": "local"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["commit", "repo", "sha256"],
+              "properties": {
+                "repo": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Source repository path or locator."
+                },
+                "commit": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Source commit at copy time; \"unknown\" when not resolvable."
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "SHA-256 of the copied executable."
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

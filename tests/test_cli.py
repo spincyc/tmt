@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import unittest
 
 from _support import TmtTestCase, load_registry, run_tmt
@@ -61,6 +63,7 @@ class NewTest(TmtTestCase):
         self.assertEqual(payload["lang"], "python")
         self.assertEqual(payload["path"], "tools/changed-files")
         self.assertEqual(payload["stage"], "draft")
+        self.assertEqual(payload["test_path"], "tools/changed-files.test")
         tool = root / "tools" / "changed-files"
         body = tool.read_text(encoding="utf-8")
         self.assertTrue(body.startswith("#!/usr/bin/env python3\n"))
@@ -97,6 +100,36 @@ class NewTest(TmtTestCase):
         entry = load_registry(root)["tools"]["greet"]
         self.assertEqual(entry["purpose"], "Say hello")
         self.assertEqual(entry["usage"], "tools/greet [--json] NAME")
+
+    def test_new_scaffolds_born_passing_smoke_test(self) -> None:
+        root = self.make_repo()
+        for tool_id, lang in (("pytool", "python"), ("shtool", "sh")):
+            with self.subTest(lang=lang):
+                run_tmt(root, "new", tool_id, "--lang", lang)
+                test = root / "tools" / f"{tool_id}.test"
+
+                self.assertTrue(test.is_file())
+                self.assertTrue(os.access(test, os.X_OK))
+                body = test.read_text(encoding="utf-8")
+                self.assertTrue(body.startswith("#!/bin/sh\n"))
+                self.assertNotIn("__TOOL_ID__", body)
+                completed = subprocess.run(
+                    [os.fspath(test)],
+                    cwd=os.fspath(root),
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_new_human_output_lists_tool_and_test(self) -> None:
+        root = self.make_repo()
+
+        result = run_tmt(root, "new", "greet")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout, "tools/greet\ntools/greet.test\n"
+        )
 
     def test_new_duplicate_id_reports_already_exists(self) -> None:
         root = self.make_repo()

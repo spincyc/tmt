@@ -31,6 +31,7 @@ the source (`not-found` otherwise).
 | `repo` | Resolved absolute path of the source repository |
 | `commit` | `git rev-parse HEAD` in the source, or `"unknown"` when Git or the repo is unavailable |
 | `sha256` | SHA-256 of the copied executable (companions are not digested) |
+| `url` | `git remote get-url origin` in the source; omitted when no `origin` remote is configured |
 
 Tools born in place keep `origin: "local"`. The stamp records where a copy
 came from; it grants nothing and is never consulted at runtime.
@@ -51,18 +52,19 @@ source's newer version, discarding local divergence.
 tmt adopt ID --to DEST_REPO
 ```
 
-Runs the portability lint first; any finding is `portability` (exit 3) and
-nothing is copied:
+Refuses a non-stable tool, then runs the portability lint; either is
+`portability` (exit 3) and nothing is copied:
 
 | Finding | Rule |
 |---|---|
+| Unhardened tool | `stage` must be `"stable"` — hardening precedes trusting; promote with `tmt stage <id> stable` first |
 | Hardcoded home path | Tool body must not contain `/home/` |
 | Hardcoded repo path | Tool body must not contain this repo's own absolute path |
 | Unpromoted dependency | Every `requires` id must already be registered in the destination — adopt dependencies first, leaves before roots |
 
 The lint is textual and applies to the executable body only. Adoption does
-not require `stage: "stable"` and does not modify the source repo; the
-destination's human approves the promotion by committing it.
+not modify the source repo; the destination's human approves the promotion
+by committing it.
 
 ## Drift and forking
 

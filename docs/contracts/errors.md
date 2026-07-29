@@ -48,9 +48,9 @@ Automation should use both and must not parse `error`.
 | `not-found` | The named tool has no registry entry, or its `tools/<id>` file is missing |
 | `already-exists` | `init` found an existing `tmt.json`; `new` found the id registered or the file present |
 | `no-registry` | No `tmt.json` at or above the working directory, or in a vendor source / adopt destination |
-| `check-failed` | A command had to load `tmt.json` and it does not parse or validate |
+| `check-failed` | A command had to load `tmt.json` and it does not parse or validate; or `tmt stage` refused a promotion (stable gates failed) or a demotion (a stable tool requires the target) |
 | `aiq-unavailable` | aiq is not on `PATH`, exited nonzero, timed out, or returned unusable output |
-| `portability` | `adopt` lint findings: hardcoded absolute paths or unpromoted dependencies |
+| `portability` | `adopt` refusals: a non-stable tool, hardcoded absolute paths, or unpromoted dependencies |
 | `internal` | An uncategorized implementation defect escaped normal handling |
 
 `check-failed` is raised by commands other than `tmt check` (exit 3); `tmt

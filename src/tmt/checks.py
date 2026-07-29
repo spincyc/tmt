@@ -1,7 +1,9 @@
 """The tmt check gate battery: collect every failure, never stop early.
 
-Draft gates apply to all tools; stable tools add the test, dependency-stage,
-portability, and origin-drift gates. Origin drift is always a warning.
+Draft gates apply to all tools, including the undeclared-composition gate
+(a sibling tool id used in the body must be declared in ``requires``);
+stable tools add the test, dependency-stage, portability, and origin-drift
+gates. Origin drift is always a warning.
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -59,6 +62,55 @@ def portability_findings(root: Path, tool_id: str, tool: Path) -> list[str]:
     return findings
 
 
+def undeclared_composition(
+    tool_id: str, entry: dict[str, Any], tool: Path, tools: dict[str, Any]
+) -> list[str]:
+    """Sibling tool ids used in the body but absent from ``requires``.
+
+    A registered id counts as used when it appears as a standalone word
+    (no adjacent ``[A-Za-z0-9_-]``), so ids embedded in longer identifiers
+    do not match. Undecodable tool bodies are skipped.
+    """
+    try:
+        body = tool.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return []
+    declared = set(entry["requires"])
+    failures: list[str] = []
+    for other in sorted(tools):
+        if other == tool_id or other in declared:
+            continue
+        pattern = (
+            f"(?<![A-Za-z0-9_-]){re.escape(other)}(?![A-Za-z0-9_-])"
+        )
+        if re.search(pattern, body):
+            failures.append(
+                f"{tool_id}: uses sibling {other!r} without declaring it "
+                "in requires"
+            )
+    return failures
+
+
+def stable_gate_failures(
+    root: Path, tool_id: str, tools: dict[str, Any]
+) -> list[str]:
+    """The full gate battery one tool must pass to hold ``stage: stable``.
+
+    Reuses the ``tmt check`` gates: the per-tool draft gates, the
+    undeclared-composition gate, and the stable gates. Origin-drift
+    warnings are not failures and are not included.
+    """
+    entry = {**registry.effective(tools[tool_id]), "stage": "stable"}
+    tool = root / "tools" / tool_id
+    if not tool.is_file():
+        return [f"{tool_id}: tools/{tool_id} missing for tmt.json entry"]
+    failures = _check_tool(tool_id, entry, tool)
+    failures.extend(undeclared_composition(tool_id, entry, tool, tools))
+    stable_failures, _ = _check_stable(root, tool_id, entry, tool, tools)
+    failures.extend(stable_failures)
+    return failures
+
+
 def run_checks(root: Path) -> tuple[list[str], list[str]]:
     """Run the full battery; return (failures, warnings)."""
     warnings: list[str] = []
@@ -89,6 +141,9 @@ def run_checks(root: Path) -> tuple[list[str], list[str]]:
             )
             continue
         failures.extend(_check_tool(tool_id, entry, tool))
+        failures.extend(
+            undeclared_composition(tool_id, entry, tool, tools)
+        )
         if entry["stage"] == "stable":
             stable_failures, stable_warnings = _check_stable(
                 root, tool_id, entry, tool, tools

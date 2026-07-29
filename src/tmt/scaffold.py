@@ -12,6 +12,7 @@ from tmt.registry import TmtError
 LANGS = ("python", "sh")
 DEFAULT_LANG = "python"
 _TEMPLATE_FILES = {"python": "tool.py", "sh": "tool.sh"}
+_TEST_TEMPLATE_FILE = "tool.test"
 
 AGENTS_STANZA = (
     "Repo tools are indexed in tmt.json; run `tools/<id> --help` before "
@@ -44,13 +45,17 @@ def _escape_sh(value: str) -> str:
     return value.replace("'", "'\\''")
 
 
-def _render(lang: str, tool_id: str, purpose: str, usage: str) -> str:
-    template = (
+def _template(filename: str) -> str:
+    return (
         resources.files("tmt._resources")
         .joinpath("templates")
-        .joinpath(_TEMPLATE_FILES[lang])
+        .joinpath(filename)
         .read_text(encoding="utf-8")
     )
+
+
+def _render(lang: str, tool_id: str, purpose: str, usage: str) -> str:
+    template = _template(_TEMPLATE_FILES[lang])
     escape = _escape_python if lang == "python" else _escape_sh
     for placeholder, value in (
         ("__TOOL_ID__", tool_id),
@@ -69,7 +74,8 @@ def new(
     purpose: str | None = None,
     usage: str | None = None,
 ) -> dict[str, Any]:
-    """Scaffold tools/<id> plus its draft tmt.json entry."""
+    """Scaffold tools/<id>, a born-passing tools/<id>.test smoke test, and
+    the draft tmt.json entry."""
     if not registry.valid_id(tool_id):
         raise TmtError(
             "usage",
@@ -105,6 +111,12 @@ def new(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_render(lang, tool_id, purpose, usage), encoding="utf-8")
     path.chmod(0o755)
+    test_path = path.with_name(f"{tool_id}.test")
+    test_path.write_text(
+        _template(_TEST_TEMPLATE_FILE).replace("__TOOL_ID__", tool_id),
+        encoding="utf-8",
+    )
+    test_path.chmod(0o755)
     entry: dict[str, Any] = {
         "idempotent": True,
         "json": True,
@@ -123,4 +135,5 @@ def new(
         "id": tool_id,
         "lang": lang,
         "path": str(path.relative_to(root)),
+        "test_path": str(test_path.relative_to(root)),
     }

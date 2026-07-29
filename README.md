@@ -49,42 +49,31 @@ tools/changed-files --help
 tmt list
 tmt check
 
-cat > tools/changed-files.test <<'EOF'
-#!/bin/sh
-set -eu
-"$(dirname "$0")/changed-files" --json >/dev/null
-EOF
-chmod +x tools/changed-files.test
-
-python3 - <<'EOF'
-import json, pathlib
-path = pathlib.Path("tmt.json")
-data = json.loads(path.read_text())
-data["tools"]["changed-files"]["stage"] = "stable"
-path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-EOF
+tmt stage changed-files stable
 
 tmt check
 ```
 
 `tmt new` scaffolds a Python tool by default (`--lang sh` for wrapper-thin
-pipelines) that already passes every draft gate: shebang, `--help`, and a
-`--json` stub emitting one compact key-sorted object with `"v": 1`. Paste the
-derived logic into the scaffold's `run()` body and commit. Flipping `stage` to
-`"stable"` is a hand edit of `tmt.json`; `tmt check` then also requires the
-executable `tools/<id>.test` above to exit 0. Put `tmt check` in the repo's
-existing verify target so a stale registry is a build failure.
+pipelines) that already passes every draft gate — shebang, `--help`, and a
+`--json` stub emitting one compact key-sorted object with `"v": 1` — plus a
+born-passing `tools/<id>.test` smoke test. Paste the derived logic into the
+scaffold's `run()` body, extend the test, and commit. `tmt stage <id> stable`
+promotes the tool after running the full stable gate battery (including that
+test). Put `tmt check` in the repo's existing verify target so a stale
+registry is a build failure.
 
 ## Find the right operation
 
 | Need | Command |
 |---|---|
 | Create the registry | `tmt init` |
-| Scaffold a tool plus its draft entry | `tmt new <id>` |
+| Scaffold a tool, its smoke test, and its draft entry | `tmt new <id>` |
 | Survey the registry | `tmt list` |
 | Inspect one tool: entry, `--help`, long doc | `tmt show <id>` |
 | Run every gate, collect every failure | `tmt check` |
-| Record "re-derived this again" | `tmt note <slug> [--note TEXT]` |
+| Promote or demote through the gates | `tmt stage <id> <draft\|stable>` |
+| Record "re-derived this again", see the running count | `tmt note <slug> [--note TEXT]` |
 | Count recorded candidates | `tmt candidates` |
 | Copy a tool in, stamped with provenance | `tmt vendor <source-repo> <id>` |
 | Lint and copy a tool out | `tmt adopt <id> --to <dest-repo>` |

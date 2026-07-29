@@ -178,11 +178,11 @@ class DraftGateTest(TmtTestCase):
 class StableGateTest(TmtTestCase):
     def _make_stable(self, root, tool_id: str, *, with_test: bool = True):
         run_tmt(root, "new", tool_id, "--lang", "sh")
+        test = root / "tools" / f"{tool_id}.test"
         if with_test:
-            write_executable(
-                root / "tools" / f"{tool_id}.test",
-                PASSING_TEST.format(tool_id=tool_id),
-            )
+            write_executable(test, PASSING_TEST.format(tool_id=tool_id))
+        else:
+            test.unlink()  # discard the scaffolded smoke test
         data = load_registry(root)
         data["tools"][tool_id]["stage"] = "stable"
         save_registry(root, data)
@@ -274,6 +274,62 @@ class StableGateTest(TmtTestCase):
         tool = root / "tools" / "loose"
         tool.write_text(
             tool.read_text(encoding="utf-8") + "# /home/example/ok-in-draft\n",
+            encoding="utf-8",
+        )
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual((returncode, failures), (0, []))
+
+
+class CompositionGateTest(TmtTestCase):
+    """Using a sibling tool without declaring it in requires is a failure."""
+
+    def _compose(self, root, caller: str, callee: str) -> None:
+        run_tmt(root, "new", caller, "--lang", "sh")
+        run_tmt(root, "new", callee, "--lang", "sh")
+        tool = root / "tools" / caller
+        tool.write_text(
+            tool.read_text(encoding="utf-8")
+            + f'"$(dirname "$0")/{callee}" --json >/dev/null\n',
+            encoding="utf-8",
+        )
+
+    def test_undeclared_sibling_use_fails_for_drafts(self) -> None:
+        root = self.make_repo()
+        self._compose(root, "affected-tests", "changed-files")
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            failures,
+            [
+                "affected-tests: uses sibling 'changed-files' without "
+                "declaring it in requires"
+            ],
+        )
+
+    def test_declared_sibling_use_passes(self) -> None:
+        root = self.make_repo()
+        self._compose(root, "affected-tests", "changed-files")
+        data = load_registry(root)
+        data["tools"]["affected-tests"]["requires"] = ["changed-files"]
+        save_registry(root, data)
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual((returncode, failures), (0, []))
+
+    def test_id_embedded_in_longer_identifier_does_not_match(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "files", "--lang", "sh")
+        run_tmt(root, "new", "lister", "--lang", "sh")
+        tool = root / "tools" / "lister"
+        tool.write_text(
+            tool.read_text(encoding="utf-8")
+            + "# consumes changed-files output only\n"
+            + "changed_files=1\n",
             encoding="utf-8",
         )
 

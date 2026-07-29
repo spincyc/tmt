@@ -1,0 +1,15 @@
+#!/bin/sh
+# Smoke test for tools/__TOOL_ID__: exit 0 = pass (the stable gate).
+# Extend with real assertions as the tool grows edge cases.
+set -eu
+
+tool="$(dirname "$0")/__TOOL_ID__"
+
+# --help always works.
+"$tool" --help >/dev/null
+
+# --json emits exactly one line holding one JSON object with "v": 1.
+output="$("$tool" --json)"
+[ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+printf '%s\n' "$output" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["v"] == 1'

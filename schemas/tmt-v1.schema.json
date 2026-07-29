@@ -100,6 +100,11 @@
                   "type": "string",
                   "pattern": "^[0-9a-f]{64}$",
                   "description": "SHA-256 of the copied executable."
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Source repository's origin remote URL, recorded when one was configured at copy time."
                 }
               }
             }

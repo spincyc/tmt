@@ -11,6 +11,7 @@ from _support import (
     TmtTestCase,
     git_init_commit,
     load_registry,
+    run_git,
     run_tmt,
     save_registry,
     write_executable,
@@ -52,6 +53,7 @@ class VendorTest(TmtTestCase):
         self.assertEqual(payload["id"], "greet")
         self.assertEqual(payload["path"], "tools/greet")
         origin = payload["origin"]
+        # No origin remote in the source, so no url field is stamped.
         self.assertEqual(
             sorted(origin), ["commit", "repo", "sha256"]
         )
@@ -103,6 +105,35 @@ class VendorTest(TmtTestCase):
             human.stdout,
         )
 
+    def test_vendor_stamps_url_when_source_has_origin_remote(self) -> None:
+        source, _ = self._source_with_stable_tool("greet")
+        run_git(
+            source,
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/tmt-lib.git",
+        )
+        dest = self.make_repo()
+
+        payload = self.assert_json_success(
+            run_tmt(dest, "vendor", os.fspath(source), "greet", "--json")
+        )
+
+        origin = payload["origin"]
+        self.assertEqual(
+            sorted(origin), ["commit", "repo", "sha256", "url"]
+        )
+        self.assertEqual(
+            origin["url"], "https://example.invalid/tmt-lib.git"
+        )
+        self.assertEqual(
+            load_registry(dest)["tools"]["greet"]["origin"], origin
+        )
+        # The optional url field validates: the vendored repo still checks.
+        returncode, failures, warnings = self.check_json(dest)
+        self.assertEqual((returncode, failures, warnings), (0, [], []))
+
     def test_vendor_human_prints_path(self) -> None:
         source, _ = self._source_with_stable_tool("greet")
         dest = self.make_repo()
@@ -134,9 +165,15 @@ class VendorTest(TmtTestCase):
 
 
 class AdoptTest(TmtTestCase):
+    def _new_stable(self, repo, tool_id: str, *extra: str) -> None:
+        """Scaffold and promote: the scaffolded smoke test passes the gates."""
+        run_tmt(repo, "new", tool_id, "--lang", "sh", *extra)
+        result = run_tmt(repo, "stage", tool_id, "stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_adopt_copies_out_with_origin_stamp(self) -> None:
         repo = self.make_repo()
-        run_tmt(repo, "new", "clean", "--lang", "sh", "--purpose", "Portable")
+        self._new_stable(repo, "clean", "--purpose", "Portable")
         commit = git_init_commit(repo)
         dest = self.make_repo()
 
@@ -148,6 +185,7 @@ class AdoptTest(TmtTestCase):
         self.assertEqual(payload["id"], "clean")
         self.assertEqual(payload["to"], os.fspath(dest))
         origin = payload["origin"]
+        self.assertNotIn("url", origin)  # no origin remote configured
         self.assertEqual(origin["repo"], os.fspath(repo))
         self.assertEqual(origin["commit"], commit)
         tool = dest / "tools" / "clean"
@@ -156,6 +194,42 @@ class AdoptTest(TmtTestCase):
         entry = load_registry(dest)["tools"]["clean"]
         self.assertEqual(entry["purpose"], "Portable")
         self.assertEqual(entry["origin"], origin)
+
+    def test_adopt_stamps_url_when_repo_has_origin_remote(self) -> None:
+        repo = self.make_repo()
+        self._new_stable(repo, "clean")
+        git_init_commit(repo)
+        run_git(
+            repo, "remote", "add", "origin", "ssh://example.invalid/work.git"
+        )
+        dest = self.make_repo()
+
+        payload = self.assert_json_success(
+            run_tmt(repo, "adopt", "clean", "--to", os.fspath(dest), "--json")
+        )
+
+        origin = payload["origin"]
+        self.assertEqual(origin["url"], "ssh://example.invalid/work.git")
+        self.assertEqual(
+            load_registry(dest)["tools"]["clean"]["origin"], origin
+        )
+
+    def test_adopt_refuses_draft_tool(self) -> None:
+        repo = self.make_repo()
+        run_tmt(repo, "new", "young", "--lang", "sh")
+        dest = self.make_repo()
+
+        payload = self.assert_json_error(
+            run_tmt(
+                repo, "adopt", "young", "--to", os.fspath(dest), "--json"
+            ),
+            "portability",
+            3,
+        )
+
+        self.assertIn("only stable tools can be adopted", payload["error"])
+        self.assertEqual(load_registry(dest)["tools"], {})
+        self.assertFalse((dest / "tools" / "young").exists())
 
     def test_adopt_rejects_home_path_with_portability_error(self) -> None:
         repo = self.make_repo()
@@ -166,6 +240,11 @@ class AdoptTest(TmtTestCase):
             + "cat /home/example/notes >/dev/null\n",
             encoding="utf-8",
         )
+        # Flip the stage by hand: `tmt stage` would already refuse this
+        # body, and adopt must lint it independently.
+        data = load_registry(repo)
+        data["tools"]["sticky"]["stage"] = "stable"
+        save_registry(repo, data)
         dest = self.make_repo()
 
         payload = self.assert_json_error(
@@ -182,11 +261,13 @@ class AdoptTest(TmtTestCase):
 
     def test_adopt_rejects_unpromoted_dependency(self) -> None:
         repo = self.make_repo()
+        self._new_stable(repo, "helper")
         run_tmt(repo, "new", "top", "--lang", "sh")
-        run_tmt(repo, "new", "helper", "--lang", "sh")
         data = load_registry(repo)
         data["tools"]["top"]["requires"] = ["helper"]
         save_registry(repo, data)
+        result = run_tmt(repo, "stage", "top", "stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
         dest = self.make_repo()
 
         payload = self.assert_json_error(
@@ -199,7 +280,7 @@ class AdoptTest(TmtTestCase):
 
     def test_adopt_to_destination_without_registry(self) -> None:
         repo = self.make_repo()
-        run_tmt(repo, "new", "clean", "--lang", "sh")
+        self._new_stable(repo, "clean")
         bare = self.make_dir()
 
         self.assert_json_error(

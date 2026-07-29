@@ -134,6 +134,21 @@ def candidates(*, cwd: Path) -> list[dict[str, Any]]:
     )
 
 
+def slug_count(slug: str, *, cwd: Path) -> int | None:
+    """This slug's note count via the candidates machinery, or ``None``
+    when counting fails or the slug has not surfaced yet. Never raises:
+    a count problem must not fail an already-successful note."""
+    try:
+        rows = candidates(cwd=cwd)
+    except TmtError:
+        return None
+    for row in rows:
+        if row["slug"] == slug:
+            count = row["count"]
+            return count if isinstance(count, int) else None
+    return None
+
+
 def _note_payload(message: Any) -> tuple[str, str | None] | None:
     if not isinstance(message, dict) or message.get("source") != SOURCE:
         return None

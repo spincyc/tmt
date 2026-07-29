@@ -126,7 +126,14 @@ console entry `tmt.cli:main`, `make test/verify/ci`, versioned
 AGENTS.md, doc-tested README, Keep-a-Changelog. tmt's repo is itself
 tmt-enabled (dogfood). CLI surface (all commands take `--json`):
 
-`init | new | list | show | check | candidates | vendor | adopt`
+`init | new | list | show | check | stage | note | candidates | vendor | adopt`
+
+Post-drive amendments (2026-07-29, after a full dogfood cycle): `tmt stage`
+is the only sanctioned way to flip a tool's stage (promotion pre-runs the
+stable battery; agents never hand-edit tmt.json); `tmt new` also scaffolds a
+born-passing `tools/<id>.test` smoke; `tmt check` fails on used-but-undeclared
+sibling composition; `tmt adopt` refuses non-stable tools; `tmt note` reports
+the slug's running count and nudges `tmt new` at the threshold.
 
 Guidance wiring: new `ai-guidance/15-tool-making.md` registered in
 AI_GUIDANCE.md's ordered list (respect the 250-word entry budget); per-repo

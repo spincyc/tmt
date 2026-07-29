@@ -41,10 +41,14 @@ class AiqStubTestCase(TmtTestCase):
             f"{os.environ.get('PATH', '')}"
         }
 
-    def captured_argv(self) -> list[str]:
-        return json.loads(
-            (self.capture_dir / "argv.json").read_text(encoding="utf-8")
+    def captured_argvs(self) -> list[list[str]]:
+        """Every aiq invocation's argv, in call order."""
+        lines = (
+            (self.capture_dir / "argv.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
         )
+        return [json.loads(line) for line in lines]
 
     def captured_stdin(self) -> str:
         return (self.capture_dir / "stdin.txt").read_text(encoding="utf-8")
@@ -72,7 +76,8 @@ class NoteTest(AiqStubTestCase):
         self.assertEqual(payload["message_id"], "msg-1")
         self.assertEqual(payload["slug"], "changed-files")
         self.assertEqual(
-            self.captured_argv(), ["ingest", "--event-json", "-", "--json"]
+            self.captured_argvs()[0],
+            ["ingest", "--event-json", "-", "--json"],
         )
         envelope = json.loads(self.captured_stdin())
         self.assertEqual(
@@ -110,7 +115,7 @@ class NoteTest(AiqStubTestCase):
         )
 
         self.assert_json_error(result, "usage", 2)
-        self.assertFalse((self.capture_dir / "argv.json").exists())
+        self.assertFalse((self.capture_dir / "argv.jsonl").exists())
 
     def test_note_when_aiq_is_absent(self) -> None:
         result = run_tmt(
@@ -139,6 +144,85 @@ class NoteTest(AiqStubTestCase):
         self.assertIn("stub failure", payload["error"])
 
 
+class NoteCountTest(AiqStubTestCase):
+    """After a successful ingest, note reports the slug's running count."""
+
+    def _stub(self, messages: list[dict[str, str]] | None) -> None:
+        responses = {"ingest": INGEST_RESPONSE}
+        if messages is not None:
+            responses["inbox"] = _inbox_response(messages)
+        write_aiq_stub(self.bin_dir, self.capture_dir, responses)
+
+    def test_json_count_at_threshold(self) -> None:
+        self._stub(
+            [
+                _note_message("changed-files"),
+                _note_message("changed-files", "again"),
+                _note_message("other"),
+            ]
+        )
+
+        payload = self.assert_json_success(
+            run_tmt(
+                self.repo, "note", "changed-files", "--json", env=self.env
+            )
+        )
+
+        self.assertEqual(payload["slug"], "changed-files")
+        self.assertEqual(payload["count"], 2)
+        commands = [argv[0] for argv in self.captured_argvs()]
+        self.assertEqual(commands, ["ingest", "inbox"])
+
+    def test_human_suggests_new_at_threshold(self) -> None:
+        self._stub(
+            [
+                _note_message("changed-files"),
+                _note_message("changed-files"),
+            ]
+        )
+
+        result = run_tmt(self.repo, "note", "changed-files", env=self.env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "msg-1\n"
+            "2 notes for 'changed-files' — consider "
+            "`tmt new changed-files`\n",
+        )
+
+    def test_human_below_threshold_counts_without_suggestion(self) -> None:
+        self._stub([_note_message("changed-files")])
+
+        result = run_tmt(self.repo, "note", "changed-files", env=self.env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout, "msg-1\n1 note for 'changed-files'\n"
+        )
+
+    def test_count_failure_never_fails_a_successful_note(self) -> None:
+        # The inbox response is unparseable, so counting fails after the
+        # ingest succeeded: the note still succeeds with count omitted.
+        write_aiq_stub(
+            self.bin_dir,
+            self.capture_dir,
+            {"ingest": INGEST_RESPONSE, "inbox": "not json at all\n"},
+        )
+
+        payload = self.assert_json_success(
+            run_tmt(
+                self.repo, "note", "changed-files", "--json", env=self.env
+            )
+        )
+        self.assertNotIn("count", payload)
+        self.assertEqual(payload["message_id"], "msg-1")
+
+        human = run_tmt(self.repo, "note", "changed-files", env=self.env)
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertEqual(human.stdout, "msg-1\n")
+
+
 class CandidatesTest(AiqStubTestCase):
     def test_candidates_groups_and_counts_tmt_notes(self) -> None:
         messages = [
@@ -165,7 +249,7 @@ class CandidatesTest(AiqStubTestCase):
                 {"count": 1, "notes": [], "slug": "bar"},
             ],
         )
-        argv = self.captured_argv()
+        argv = self.captured_argvs()[0]
         self.assertEqual(argv[:3], ["inbox", "list", "--json"])
         self.assertIn("--include-content", argv)
 

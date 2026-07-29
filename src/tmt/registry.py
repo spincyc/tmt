@@ -31,6 +31,7 @@ ENTRY_DEFAULTS: dict[str, Any] = {
 _ENTRY_REQUIRED = ("purpose", "stage", "usage")
 _ENTRY_KEYS = frozenset((*_ENTRY_REQUIRED, *ENTRY_DEFAULTS))
 _ORIGIN_KEYS = ("commit", "repo", "sha256")
+_ORIGIN_OPTIONAL_KEYS = ("url",)
 
 
 class TmtError(Exception):
@@ -161,12 +162,18 @@ def _validate_origin(prefix: str, origin: Any) -> list[str]:
             "repo, commit, and sha256"
         ]
     errors: list[str] = []
-    for key in sorted(set(origin) - set(_ORIGIN_KEYS)):
+    known = set(_ORIGIN_KEYS) | set(_ORIGIN_OPTIONAL_KEYS)
+    for key in sorted(set(origin) - known):
         errors.append(f"{prefix}.origin.{key}: unknown key")
     for key in _ORIGIN_KEYS:
         if key not in origin:
             errors.append(f"{prefix}.origin.{key}: missing required key")
         elif not isinstance(origin[key], str) or not origin[key]:
+            errors.append(f"{prefix}.origin.{key}: must be a nonempty string")
+    for key in _ORIGIN_OPTIONAL_KEYS:
+        if key in origin and (
+            not isinstance(origin[key], str) or not origin[key]
+        ):
             errors.append(f"{prefix}.origin.{key}: must be a nonempty string")
     sha256 = origin.get("sha256")
     if isinstance(sha256, str) and sha256 and not _SHA256_RE.match(sha256):

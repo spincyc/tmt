@@ -18,6 +18,7 @@ from tmt import __version__, aiqbridge, checks, registry, scaffold, transfer
 from tmt.registry import TmtError
 
 PROTOCOL_VERSION = 1
+NEW_TOOL_THRESHOLD = 2  # note count at which `tmt new` is suggested
 
 # Exit categories: 0 ok, 1 check failures found (tmt check only), 2 usage,
 # 3 state/environment, 70 internal.
@@ -116,11 +117,13 @@ def _new(arguments: argparse.Namespace) -> int:
                 "lang": result["lang"],
                 "path": result["path"],
                 "stage": "draft",
+                "test_path": result["test_path"],
             },
             as_json=True,
         )
         return 0
     print(result["path"])
+    print(result["test_path"])
     return 0
 
 
@@ -201,6 +204,61 @@ def _check(arguments: argparse.Namespace) -> int:
     return 0 if status == "ok" else 1
 
 
+def _stage(arguments: argparse.Namespace) -> int:
+    root = registry.require_root()
+    data = registry.load(root)
+    tools = data["tools"]
+    entry = tools.get(arguments.id)
+    if entry is None:
+        raise TmtError(
+            "not-found", f"tool {arguments.id!r} is not registered in tmt.json"
+        )
+    previous = registry.effective(entry)["stage"]
+    target = arguments.stage
+    changed = previous != target
+    if changed and target == "stable":
+        failures = checks.stable_gate_failures(root, arguments.id, tools)
+        if failures:
+            raise TmtError(
+                "check-failed",
+                f"cannot promote {arguments.id!r} to stable: "
+                + "; ".join(failures),
+            )
+    if changed and target == "draft":
+        dependents = sorted(
+            other
+            for other, raw in tools.items()
+            if other != arguments.id
+            and registry.effective(raw)["stage"] == "stable"
+            and arguments.id in registry.effective(raw)["requires"]
+        )
+        if dependents:
+            raise TmtError(
+                "check-failed",
+                f"cannot demote {arguments.id!r} to draft: required by "
+                f"stable {', '.join(dependents)}",
+            )
+    if changed:
+        entry["stage"] = target
+        registry.save(root, data)
+    if arguments.json:
+        _emit(
+            {
+                "changed": changed,
+                "id": arguments.id,
+                "previous": previous,
+                "stage": target,
+            },
+            as_json=True,
+        )
+        return 0
+    if changed:
+        print(f"{arguments.id}: {previous} -> {target}")
+    else:
+        print(f"{arguments.id} already {target}")
+    return 0
+
+
 def _note(arguments: argparse.Namespace) -> int:
     if not registry.valid_id(arguments.slug):
         raise TmtError(
@@ -210,17 +268,25 @@ def _note(arguments: argparse.Namespace) -> int:
         )
     cwd = registry.find_root() or Path.cwd()
     result = aiqbridge.note(arguments.slug, arguments.note, cwd=cwd)
+    # The ingest succeeded; a count problem must never fail the note.
+    count = aiqbridge.slug_count(arguments.slug, cwd=cwd)
     if arguments.json:
-        _emit(
-            {
-                "created": result["created"],
-                "message_id": result["message_id"],
-                "slug": arguments.slug,
-            },
-            as_json=True,
-        )
+        payload: dict[str, Any] = {
+            "created": result["created"],
+            "message_id": result["message_id"],
+            "slug": arguments.slug,
+        }
+        if count is not None:
+            payload["count"] = count
+        _emit(payload, as_json=True)
         return 0
     print(result["message_id"])
+    if count is not None:
+        noun = "note" if count == 1 else "notes"
+        feedback = f"{count} {noun} for '{arguments.slug}'"
+        if count >= NEW_TOOL_THRESHOLD:
+            feedback += f" — consider `tmt new {arguments.slug}`"
+        print(feedback)
     return 0
 
 
@@ -272,7 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.set_defaults(handler=_init)
 
     new = commands.add_parser(
-        "new", help="scaffold tools/<id> plus a draft registry entry"
+        "new",
+        help="scaffold tools/<id>, its smoke test, and a draft entry",
     )
     new.add_argument("id")
     new.add_argument(
@@ -301,6 +368,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check.add_argument("--json", action="store_true")
     check.set_defaults(handler=_check)
+
+    stage = commands.add_parser(
+        "stage", help="promote or demote a tool through the stable gates"
+    )
+    stage.add_argument("id")
+    stage.add_argument("stage", choices=registry.STAGES, metavar="STAGE")
+    stage.add_argument("--json", action="store_true")
+    stage.set_defaults(handler=_stage)
 
     note = commands.add_parser(
         "note", help="emit a tool-candidate event via aiq ingest"

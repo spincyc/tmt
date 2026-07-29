@@ -28,9 +28,8 @@ CAPTURE = Path({capture!r})
 RESPONSES = {responses!r}
 EXIT_CODE = {exit_code!r}
 
-CAPTURE.joinpath("argv.json").write_text(
-    json.dumps(sys.argv[1:]), encoding="utf-8"
-)
+with CAPTURE.joinpath("argv.jsonl").open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\\n")
 command = sys.argv[1] if len(sys.argv) > 1 else ""
 if command == "ingest":
     CAPTURE.joinpath("stdin.txt").write_text(

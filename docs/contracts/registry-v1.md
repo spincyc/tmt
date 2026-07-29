@@ -49,6 +49,7 @@ conflicts rare; run `tmt check` as the post-merge fixup.
 | `mutates` | boolean | no | `false` | Tool changes state outside its own output |
 | `idempotent` | boolean | no | `true` | Repeating the tool is safe |
 | `requires` | array of tool ids | no | `[]` | Sibling tools this tool executes |
+| `config` | array of repo-relative paths | no | `[]` | Config files the tool reads at runtime |
 | `origin` | `"local"` or stamp object | no | `"local"` | Provenance; see [vendoring-v1.md](vendoring-v1.md) |
 
 An origin stamp object has `repo` (nonempty source path), `commit` (source
@@ -59,6 +60,13 @@ time).
 
 `mutates` and `idempotent` reuse aiq's capability-descriptor vocabulary; tmt
 records them for readers and does not enforce them.
+
+`config` lists the repo-relative paths of configuration files the tool reads
+at runtime (for example `.doc-budgets.json`), as nonempty unique strings. It
+is discovery metadata: `tmt show` displays it, and `tmt vendor`/`tmt adopt`
+carry it in the copied entry and remind the consumer to create the files —
+the files themselves are never copied, because config is repo-specific by
+nature. See [vendoring-v1.md](vendoring-v1.md).
 
 ## Semantic rules beyond the schema
 
@@ -74,8 +82,9 @@ collected and reported, never just the first.
 | Executable bit set on `tools/<id>` | all | check |
 | `tools/<id> --help` exits 0 within 5 seconds | all | check |
 | Every `requires` id resolves; no duplicate ids; no dependency cycles | all | validator + check |
-| Undeclared composition: another tool's id appearing as a standalone word in the body must be in `requires` | all | check |
+| Undeclared composition: another tool's id appearing as a standalone word in a code line of the body must be in `requires` | all | check |
 | Executable `tools/<id>.test` exists and exits 0 within 60 seconds, run from the repo root | stable | check |
+| `tools/<id>.test` must differ from the unmodified `tmt new` scaffold — write real assertions before promoting | stable | check |
 | Must not `require` a draft tool | stable | check |
 | No hardcoded absolute paths: body contains neither `/home/` nor this repo's own absolute path | stable | check |
 | Vendored copy differing from a readable `origin.repo` by sha256 | stable | check (warning only) |
@@ -87,14 +96,30 @@ standalone word — no adjacent `[A-Za-z0-9_-]`, so ids embedded in longer
 identifiers do not count. It applies to every stage, because an undeclared
 composition breaks silently the moment the sibling is renamed or removed.
 
+The gate scans code lines only: full-line comments — lines whose first
+non-whitespace character is `#`, including the shebang — are dropped before
+matching, so prose references to sibling tools ("Sibling doc-budgets
+composes this tool") belong in full-line comments, which are exempt. Inline
+comments and string literals are scanned as code: path strings legitimately
+contain sibling ids and must keep matching.
+
+The test-differs-from-scaffold gate compares `tools/<id>.test` byte-for-byte
+against a fresh render of the `tmt new` test template for that id. The
+scaffolded smoke asserts only that `--help` exits 0 — the sole universal
+guarantee — so an unmodified scaffold would let promotion through trivially;
+the stable battery (and therefore `tmt stage <id> stable`) refuses it until
+real assertions are written.
+
 Files under `tools/` whose names start with `.` or end in `.md` or `.test`
 are companions, not tools, and are exempt from parity. `tools/<id>.md` is the
 optional long doc surfaced by `tmt show`; `tools/<id>.test` is the stable
 gate's test.
 
 Readers fill defaults when interpreting an entry (`tmt show` reports this
-effective view). `tmt new` writes every field explicitly, including
-`json: true`, because its scaffolds ship a working `--json` stub.
+effective view). `tmt new` writes every field explicitly — including
+`json: true`, because its scaffolds ship a working `--json` stub — except
+the optional `config`, which is added by hand when a tool grows a config
+file.
 
 ## Versioning
 

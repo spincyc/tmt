@@ -85,9 +85,52 @@ class StagePromoteTest(TmtTestCase):
 
         self.assertIn("draft 'helper'", payload["error"])
 
+    def test_promotion_refused_on_pristine_scaffold_test(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "hollow", "--lang", "sh")
+        # tools/hollow.test is exactly what `tmt new` scaffolded.
+
+        payload = self.assert_json_error(
+            run_tmt(root, "stage", "hollow", "stable", "--json"),
+            "check-failed",
+            3,
+        )
+
+        self.assertIn("unmodified scaffold", payload["error"])
+        self.assertIn("real assertions", payload["error"])
+        self.assertEqual(
+            load_registry(root)["tools"]["hollow"]["stage"], "draft"
+        )
+
+    def test_promotion_succeeds_after_modifying_the_scaffold_test(
+        self,
+    ) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "hollow", "--lang", "sh")
+        result = run_tmt(root, "stage", "hollow", "stable")
+        self.assertEqual(result.returncode, 3)  # refused: pristine scaffold
+        test = root / "tools" / "hollow.test"
+        test.write_text(
+            test.read_text(encoding="utf-8")
+            + '"$tool" --json >/dev/null\n',
+            encoding="utf-8",
+        )
+
+        payload = self.assert_json_success(
+            run_tmt(root, "stage", "hollow", "stable", "--json")
+        )
+
+        self.assertEqual(payload["stage"], "stable")
+        self.assertTrue(payload["changed"])
+        returncode, failures, _ = self.check_json(root)
+        self.assertEqual((returncode, failures), (0, []))
+
     def test_human_output_reports_the_transition(self) -> None:
         root = self.make_repo()
         run_tmt(root, "new", "raw", "--lang", "sh")
+        write_executable(
+            root / "tools" / "raw.test", PASSING_TEST.format(tool_id="raw")
+        )
 
         result = run_tmt(root, "stage", "raw", "stable")
 
@@ -98,6 +141,10 @@ class StagePromoteTest(TmtTestCase):
 class StageDemoteTest(TmtTestCase):
     def _stable(self, root, tool_id: str) -> None:
         run_tmt(root, "new", tool_id, "--lang", "sh")
+        write_executable(
+            root / "tools" / f"{tool_id}.test",
+            PASSING_TEST.format(tool_id=tool_id),
+        )
         result = run_tmt(root, "stage", tool_id, "stable")
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -105,6 +152,9 @@ class StageDemoteTest(TmtTestCase):
         root = self.make_repo()
         self._stable(root, "helper")
         run_tmt(root, "new", "top", "--lang", "sh")
+        write_executable(
+            root / "tools" / "top.test", PASSING_TEST.format(tool_id="top")
+        )
         data = load_registry(root)
         data["tools"]["top"]["requires"] = ["helper"]
         save_registry(root, data)

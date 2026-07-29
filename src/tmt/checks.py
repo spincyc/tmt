@@ -2,8 +2,9 @@
 
 Draft gates apply to all tools, including the undeclared-composition gate
 (a sibling tool id used in the body must be declared in ``requires``);
-stable tools add the test, dependency-stage, portability, and origin-drift
-gates. Origin drift is always a warning.
+stable tools add the test (which must differ from the unmodified
+scaffold), dependency-stage, portability, and origin-drift gates. Origin
+drift is always a warning.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from tmt import registry
+from tmt import registry, scaffold
 
 HELP_TIMEOUT_SECONDS = 5
 TEST_TIMEOUT_SECONDS = 60
@@ -69,12 +70,22 @@ def undeclared_composition(
 
     A registered id counts as used when it appears as a standalone word
     (no adjacent ``[A-Za-z0-9_-]``), so ids embedded in longer identifiers
-    do not match. Undecodable tool bodies are skipped.
+    do not match. Full-line comments — lines whose first non-whitespace
+    character is ``#``, including the shebang — are dropped before
+    scanning, so prose references to sibling tools belong there. Inline
+    comments and string literals are scanned: path strings legitimately
+    contain sibling ids and must keep matching. Undecodable tool bodies
+    are skipped.
     """
     try:
-        body = tool.read_text(encoding="utf-8")
+        text = tool.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return []
+    body = "\n".join(
+        line
+        for line in text.splitlines()
+        if not line.lstrip().startswith("#")
+    )
     declared = set(entry["requires"])
     failures: list[str] = []
     for other in sorted(tools):
@@ -257,6 +268,11 @@ def _check_stable(
     elif not os.access(test, os.X_OK):
         failures.append(
             f"{tool_id}: executable bit not set on tools/{tool_id}.test"
+        )
+    elif test.read_bytes() == scaffold.render_test(tool_id).encode("utf-8"):
+        failures.append(
+            f"{tool_id}: tools/{tool_id}.test is the unmodified scaffold; "
+            "write real assertions before promoting"
         )
     else:
         failures.extend(_run_test(root, tool_id, test))

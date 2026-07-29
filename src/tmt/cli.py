@@ -172,7 +172,7 @@ def _show(arguments: argparse.Namespace) -> int:
         return 0
     for key in sorted(entry):
         value: Any = entry[key]
-        if key == "requires":
+        if key in ("config", "requires"):
             value = ",".join(value)
         elif key == "origin" and isinstance(value, dict):
             value = f"{value['repo']}@{value['commit']}"
@@ -309,6 +309,9 @@ def _vendor(arguments: argparse.Namespace) -> int:
         _emit({**result, "status": "vendored"}, as_json=True)
         return 0
     print(result["path"])
+    if "config" in result:
+        paths = ", ".join(result["config"])
+        print(f"note: reads {_single_line(paths)}; create them in this repo")
     return 0
 
 
@@ -320,6 +323,12 @@ def _adopt(arguments: argparse.Namespace) -> int:
         _emit({**result, "status": "adopted"}, as_json=True)
         return 0
     print(f"{result['id']} -> {result['to']}")
+    if "config" in result:
+        paths = ", ".join(result["config"])
+        print(
+            f"note: reads {_single_line(paths)}; create them in the "
+            "destination repo"
+        )
     return 0
 
 

@@ -30,7 +30,7 @@ is when composition and extraction start trusting the tool.
 | Stage | Cost to enter | `tmt check` enforces |
 |---|---|---|
 | `draft` | `tmt new <id>` + paste the derived logic | registry validity, entry↔file parity, syntax lint, executable bit, `--help` smoke, `requires` resolve, no cycles, declared composition |
-| `stable` | extend the scaffolded `tools/<id>.test`, run `tmt stage <id> stable` | draft gates + test exits 0 + no draft dependencies + no hardcoded absolute paths |
+| `stable` | extend the scaffolded `tools/<id>.test`, run `tmt stage <id> stable` | draft gates + test exits 0 and differs from the unmodified scaffold + no draft dependencies + no hardcoded absolute paths |
 
 Drafts may live indefinitely; the only penalty is exclusion from stable
 composition. `tmt stage <id> stable` promotes a tool — it runs the full
@@ -68,6 +68,16 @@ matching `requires` entry is a failure at every stage — keeps the graph
 resolved and acyclic, and forbids a stable tool from requiring a draft — so
 hardening pressure flows down the dependency graph, and composed tools
 inherit every hardening their dependencies receive.
+
+## Check-style tools
+
+For tools that scan for problems, the recommended contract is `tmt check`'s
+own: exit 0 when clean, exit 1 when findings are present, with `--json`
+output identical in shape in both cases (the findings array is simply empty
+when clean). Usage, state, and internal errors keep their cli-v1 categories
+(2, 3, 70). The scaffolded test's commented skeleton shows the matching
+assertion pattern for an expected exit 1:
+`"$tool" ... && exit 1 || test $? = 1`.
 
 ## aiq seams
 

@@ -74,6 +74,16 @@
           "default": [],
           "description": "Sibling tool ids this tool executes; must resolve and stay acyclic."
         },
+        "config": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Repo-relative paths of config files the tool reads; recorded for consumers, never copied by vendor/adopt."
+        },
         "origin": {
           "default": "local",
           "description": "\"local\" for tools born here; a provenance stamp for vendored copies.",

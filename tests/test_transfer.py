@@ -164,10 +164,102 @@ class VendorTest(TmtTestCase):
         )
 
 
+class ConfigCarryTest(TmtTestCase):
+    """Vendor and adopt carry `config`, remind, and never copy the files."""
+
+    def _stable_with_config(self, tool_id: str) -> Path:
+        repo = self.make_repo()
+        run_tmt(repo, "new", tool_id, "--lang", "sh", "--purpose", "Budgets")
+        write_executable(
+            repo / "tools" / f"{tool_id}.test",
+            PASSING_TEST.format(tool_id=tool_id),
+        )
+        data = load_registry(repo)
+        data["tools"][tool_id]["config"] = [".doc-budgets.json"]
+        data["tools"][tool_id]["stage"] = "stable"
+        save_registry(repo, data)
+        (repo / ".doc-budgets.json").write_text("{}\n", encoding="utf-8")
+        return repo
+
+    def test_vendor_carries_config_and_reminds(self) -> None:
+        source = self._stable_with_config("budgets")
+        dest = self.make_repo()
+
+        payload = self.assert_json_success(
+            run_tmt(dest, "vendor", os.fspath(source), "budgets", "--json")
+        )
+
+        self.assertEqual(payload["config"], [".doc-budgets.json"])
+        entry = load_registry(dest)["tools"]["budgets"]
+        self.assertEqual(entry["config"], [".doc-budgets.json"])
+        # The config file itself is never copied: config is repo-specific.
+        self.assertFalse((dest / ".doc-budgets.json").exists())
+
+        human_dest = self.make_repo()
+        result = run_tmt(
+            human_dest, "vendor", os.fspath(source), "budgets"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "tools/budgets\n"
+            "note: reads .doc-budgets.json; create them in this repo\n",
+        )
+
+    def test_vendor_without_config_stays_quiet(self) -> None:
+        source = self._stable_with_config("budgets")
+        data = load_registry(source)
+        del data["tools"]["budgets"]["config"]
+        save_registry(source, data)
+        dest = self.make_repo()
+
+        payload = self.assert_json_success(
+            run_tmt(dest, "vendor", os.fspath(source), "budgets", "--json")
+        )
+        self.assertNotIn("config", payload)
+
+        human_dest = self.make_repo()
+        result = run_tmt(
+            human_dest, "vendor", os.fspath(source), "budgets"
+        )
+        self.assertEqual(result.stdout, "tools/budgets\n")
+
+    def test_adopt_carries_config_and_reminds(self) -> None:
+        repo = self._stable_with_config("budgets")
+        dest = self.make_repo()
+
+        payload = self.assert_json_success(
+            run_tmt(
+                repo, "adopt", "budgets", "--to", os.fspath(dest), "--json"
+            )
+        )
+
+        self.assertEqual(payload["config"], [".doc-budgets.json"])
+        entry = load_registry(dest)["tools"]["budgets"]
+        self.assertEqual(entry["config"], [".doc-budgets.json"])
+        self.assertFalse((dest / ".doc-budgets.json").exists())
+
+        human_dest = self.make_repo()
+        result = run_tmt(
+            repo, "adopt", "budgets", "--to", os.fspath(human_dest)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            f"budgets -> {os.fspath(human_dest)}\n"
+            "note: reads .doc-budgets.json; create them in the "
+            "destination repo\n",
+        )
+
+
 class AdoptTest(TmtTestCase):
     def _new_stable(self, repo, tool_id: str, *extra: str) -> None:
-        """Scaffold and promote: the scaffolded smoke test passes the gates."""
+        """Scaffold, write a real (non-scaffold) test, and promote."""
         run_tmt(repo, "new", tool_id, "--lang", "sh", *extra)
+        write_executable(
+            repo / "tools" / f"{tool_id}.test",
+            PASSING_TEST.format(tool_id=tool_id),
+        )
         result = run_tmt(repo, "stage", tool_id, "stable")
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -263,6 +355,9 @@ class AdoptTest(TmtTestCase):
         repo = self.make_repo()
         self._new_stable(repo, "helper")
         run_tmt(repo, "new", "top", "--lang", "sh")
+        write_executable(
+            repo / "tools" / "top.test", PASSING_TEST.format(tool_id="top")
+        )
         data = load_registry(repo)
         data["tools"]["top"]["requires"] = ["helper"]
         save_registry(repo, data)

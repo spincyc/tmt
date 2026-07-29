@@ -6,7 +6,7 @@ import os
 import subprocess
 import unittest
 
-from _support import TmtTestCase, load_registry, run_tmt
+from _support import TmtTestCase, load_registry, run_tmt, save_registry
 
 
 class InitTest(TmtTestCase):
@@ -221,6 +221,7 @@ class ShowTest(TmtTestCase):
         self.assertEqual(entry["lang"], "python")
         self.assertEqual(entry["origin"], "local")
         self.assertEqual(entry["requires"], [])
+        self.assertEqual(entry["config"], [])  # schema default filled in
 
     def test_show_human_output(self) -> None:
         root = self.make_repo()
@@ -232,6 +233,30 @@ class ShowTest(TmtTestCase):
         self.assertIn("purpose\tSay hello\n", result.stdout)
         self.assertIn("stage\tdraft\n", result.stdout)
         self.assertIn("usage:", result.stdout)  # captured --help output
+
+    def test_show_displays_declared_config(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "budgets", "--purpose", "Scan doc budgets")
+        data = load_registry(root)
+        data["tools"]["budgets"]["config"] = [
+            ".doc-budgets.json",
+            "docs/budgets.toml",
+        ]
+        save_registry(root, data)
+
+        payload = self.assert_json_success(
+            run_tmt(root, "show", "budgets", "--json")
+        )
+        self.assertEqual(
+            payload["entry"]["config"],
+            [".doc-budgets.json", "docs/budgets.toml"],
+        )
+
+        human = run_tmt(root, "show", "budgets")
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertIn(
+            "config\t.doc-budgets.json,docs/budgets.toml\n", human.stdout
+        )
 
     def test_show_unknown_tool_reports_not_found(self) -> None:
         root = self.make_repo()

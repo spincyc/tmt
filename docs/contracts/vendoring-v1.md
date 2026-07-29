@@ -19,10 +19,18 @@ Both directions copy, preserving file modes:
 | `tools/<id>.test` | when present in the source |
 
 The source registry entry is copied into the destination `tmt.json` with only
-`origin` replaced. `stage`, `requires`, and every other field carry over
-unchanged. Both source and destination must already be tmt-enabled
+`origin` replaced. `stage`, `requires`, `config`, and every other field carry
+over unchanged. Both source and destination must already be tmt-enabled
 (`no-registry` otherwise); the moved tool must be registered and present in
 the source (`not-found` otherwise).
+
+Files listed in the entry's `config` are **not** copied — config is
+repo-specific by nature. When the entry declares any, both commands remind
+the consumer instead: the human output gains a
+`note: reads <paths>; create them in this repo` line (`... in the
+destination repo` for adopt), and the JSON result gains a `config` array.
+The destination is expected to create those files before running the tool;
+without them the copy fails at runtime.
 
 ## The origin stamp
 

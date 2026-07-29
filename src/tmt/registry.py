@@ -21,6 +21,7 @@ _ID_RE = re.compile(ID_PATTERN)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 ENTRY_DEFAULTS: dict[str, Any] = {
+    "config": (),
     "idempotent": True,
     "json": False,
     "lang": "python",
@@ -128,6 +129,8 @@ def _validate_entry(prefix: str, entry: dict[str, Any]) -> list[str]:
             errors.append(f"{prefix}.{key}: must be a boolean")
     if "requires" in entry:
         errors.extend(_validate_requires(prefix, entry["requires"]))
+    if "config" in entry:
+        errors.extend(_validate_config(prefix, entry["config"]))
     if "origin" in entry:
         errors.extend(_validate_origin(prefix, entry["origin"]))
     return errors
@@ -150,6 +153,27 @@ def _validate_requires(prefix: str, requires: Any) -> list[str]:
             )
         else:
             seen.add(dependency)
+    return errors
+
+
+def _validate_config(prefix: str, config: Any) -> list[str]:
+    if not isinstance(config, list):
+        return [
+            f"{prefix}.config: must be an array of repo-relative paths"
+        ]
+    errors: list[str] = []
+    seen: set[str] = set()
+    for index, path in enumerate(config):
+        if not isinstance(path, str) or not path:
+            errors.append(
+                f"{prefix}.config[{index}]: must be a nonempty string"
+            )
+        elif path in seen:
+            errors.append(
+                f"{prefix}.config[{index}]: duplicate path {path!r}"
+            )
+        else:
+            seen.add(path)
     return errors
 
 
@@ -218,5 +242,6 @@ def save(root: Path, data: dict[str, Any]) -> None:
 def effective(entry: dict[str, Any]) -> dict[str, Any]:
     """Return ``entry`` with schema defaults filled in."""
     merged = {**ENTRY_DEFAULTS, **entry}
+    merged["config"] = list(merged["config"])
     merged["requires"] = list(merged["requires"])
     return merged

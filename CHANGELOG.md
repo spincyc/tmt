@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/). Public
 compatibility covers documented CLI behavior, exit codes, the versioned
 `tmt.json` registry format, and the JSON output protocol.
 
+## [0.1.0a3] - 2026-07-29
+
+### Added
+
+- Optional per-tool registry field `config`: repo-relative paths of
+  configuration files the tool reads. Validated, round-tripped, and shown by
+  `tmt show`; `tmt vendor` and `tmt adopt` carry it in the copied entry and
+  remind the consumer to create the files (human `note:` line; JSON result
+  gains `config`) — the files themselves are never copied, because config is
+  repo-specific by nature.
+- Stable gate: the battery (and therefore `tmt stage <id> stable`) fails
+  while `tools/<id>.test` is byte-identical to the unmodified `tmt new`
+  scaffold — write real assertions before promoting.
+- docs/concepts.md records the recommended check-style contract for tools
+  that scan for problems: exit 0 clean / exit 1 findings-present, with
+  `--json` output identical in shape in both cases.
+
+### Changed
+
+- The scaffolded `tools/<id>.test` now asserts only that `--help` exits 0 —
+  the sole universal guarantee, so scaffolds stay born-passing for tools
+  with required arguments or check-style exit contracts — and ships a
+  commented-out skeleton for real assertions: mktemp sandbox with trap
+  cleanup, resolved sibling path, `--json` line checks, and the
+  expected-exit-1 check-style pattern.
+
+### Fixed
+
+- Composition-gate false positive: full-line comments (first non-whitespace
+  character `#`, shebang included) are dropped before scanning a tool body
+  for sibling ids, so prose mentions of sibling tools in comments no longer
+  demand a `requires` declaration. Inline comments and string literals are
+  still scanned.
+
 ## [0.1.0a2] - 2026-07-29
 
 ### Added

@@ -54,6 +54,15 @@ def _template(filename: str) -> str:
     )
 
 
+def render_test(tool_id: str) -> str:
+    """The exact scaffolded ``tools/<id>.test`` content for ``tool_id``.
+
+    The stable gate compares the on-disk test against this render to
+    refuse promoting a tool whose test is still the unmodified scaffold.
+    """
+    return _template(_TEST_TEMPLATE_FILE).replace("__TOOL_ID__", tool_id)
+
+
 def _render(lang: str, tool_id: str, purpose: str, usage: str) -> str:
     template = _template(_TEMPLATE_FILES[lang])
     escape = _escape_python if lang == "python" else _escape_sh
@@ -112,10 +121,7 @@ def new(
     path.write_text(_render(lang, tool_id, purpose, usage), encoding="utf-8")
     path.chmod(0o755)
     test_path = path.with_name(f"{tool_id}.test")
-    test_path.write_text(
-        _template(_TEST_TEMPLATE_FILE).replace("__TOOL_ID__", tool_id),
-        encoding="utf-8",
-    )
+    test_path.write_text(render_test(tool_id), encoding="utf-8")
     test_path.chmod(0o755)
     entry: dict[str, Any] = {
         "idempotent": True,

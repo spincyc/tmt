@@ -49,6 +49,9 @@ tools/changed-files --help
 tmt list
 tmt check
 
+cat >> tools/changed-files.test <<'EOF'
+"$tool" --json | grep -q '"v":1'
+EOF
 tmt stage changed-files stable
 
 tmt check
@@ -57,11 +60,13 @@ tmt check
 `tmt new` scaffolds a Python tool by default (`--lang sh` for wrapper-thin
 pipelines) that already passes every draft gate — shebang, `--help`, and a
 `--json` stub emitting one compact key-sorted object with `"v": 1` — plus a
-born-passing `tools/<id>.test` smoke test. Paste the derived logic into the
-scaffold's `run()` body, extend the test, and commit. `tmt stage <id> stable`
-promotes the tool after running the full stable gate battery (including that
-test). Put `tmt check` in the repo's existing verify target so a stale
-registry is a build failure.
+born-passing `tools/<id>.test` smoke test that asserts only `--help` exits 0
+(the sole universal guarantee) and carries a commented skeleton for real
+assertions. Paste the derived logic into the scaffold's `run()` body, write
+real test assertions, and commit. `tmt stage <id> stable` promotes the tool
+after running the full stable gate battery — it refuses while the test is
+still the unmodified scaffold. Put `tmt check` in the repo's existing verify
+target so a stale registry is a build failure.
 
 ## Find the right operation
 

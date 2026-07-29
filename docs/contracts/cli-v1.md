@@ -47,8 +47,8 @@ The tables list fields in addition to top-level `v`.
 | `stage ID STAGE --json` | `id`, `previous`, `stage`, `changed` |
 | `note SLUG --json` | `slug`, `message_id`, `created`, optional `count` |
 | `candidates --json` | `candidates`: array of `{count, notes, slug}` |
-| `vendor SOURCE ID --json` | `status: "vendored"`, `id`, `origin`, repo-relative `path` |
-| `adopt ID --to DEST --json` | `status: "adopted"`, `id`, `origin`, absolute `to` |
+| `vendor SOURCE ID --json` | `status: "vendored"`, `id`, `origin`, repo-relative `path`, `config` when the entry declares any |
+| `adopt ID --to DEST --json` | `status: "adopted"`, `id`, `origin`, absolute `to`, `config` when the entry declares any |
 
 ## init
 
@@ -68,10 +68,13 @@ tmt new ID [--lang {python,sh}] [--purpose TEXT] [--usage TEXT] [--json]
 ```
 
 Scaffolds executable `tools/ID` (mode 0755) from the packaged template, an
-executable born-passing POSIX sh smoke test `tools/ID.test` (resolves its
-sibling via `dirname "$0"`, asserts `--help` exits 0 and that `--json` emits
-one line holding one JSON object with `"v": 1`), and adds a fully explicit
-draft entry to `tmt.json`. Defaults: `--lang python`; purpose
+executable born-passing POSIX sh smoke test `tools/ID.test` (invokes its
+sibling by resolved path and asserts only that `--help` exits 0 — the sole
+universal guarantee — plus a commented-out skeleton for real assertions:
+sandbox with cleanup, `--json` line checks, and the check-style
+expected-exit-1 pattern), and adds a fully explicit draft entry to
+`tmt.json`. The stable gate refuses to promote while the test is the
+unmodified scaffold (see [registry-v1.md](registry-v1.md)). Defaults: `--lang python`; purpose
 `TODO: describe ID`; usage `tools/ID [--json]`. Purpose and usage are
 collapsed to single lines; a purpose over 80 characters, an ID not matching
 `^[a-z0-9][a-z0-9-]*$`, or an unsupported lang is `usage` (exit 2). An ID
@@ -98,7 +101,8 @@ tmt show ID [--json]
 captured standard output of `tools/ID --help`, or `null` when the file is
 missing or `--help` fails. `doc` is the content of `tools/ID.md`, or `null`
 when absent. Human output is `key<TAB>value` lines for the sorted effective
-entry (`requires` comma-joined; an origin object as `repo@commit`), then each
+entry (`config` and `requires` comma-joined; an origin object as
+`repo@commit`), then each
 non-null block separated by a blank line. An unregistered ID is `not-found`
 (exit 3).
 
@@ -178,7 +182,10 @@ Copies `tools/ID` (plus `tools/ID.md` and `tools/ID.test` when present, with
 modes) from `SOURCE_REPO` into the current repo and writes the source entry
 into `tmt.json` with `origin` stamped `{commit, repo, sha256}` plus `url`
 when the source has an `origin` remote. Overwrites an
-existing local copy deliberately. A source without `tmt.json` is
+existing local copy deliberately. When the entry declares `config`, the
+declared files are not copied; the human output adds a
+`note: reads <paths>; create them in this repo` line and the JSON result
+gains the `config` array. A source without `tmt.json` is
 `no-registry`; a source without the entry or the file is `not-found` (both
 exit 3).
 
@@ -195,7 +202,10 @@ tools can be adopted — hardening precedes trusting — so a non-stable `ID` is
 `portability` (exit 3). Lint findings — a hardcoded `/home/` or this repo's
 own absolute path in the tool body, or a `requires` entry not already
 registered in the destination — are `portability` (exit 3) and nothing is
-copied. A destination without `tmt.json` is `no-registry` (exit 3). Adoption
+copied. A destination without `tmt.json` is `no-registry` (exit 3). When the
+entry declares `config`, the declared files are not copied; the human output
+adds a `note: reads <paths>; create them in the destination repo` line and
+the JSON result gains the `config` array. Adoption
 is mechanical preparation; promotion is the human committing the result in
 the destination.
 

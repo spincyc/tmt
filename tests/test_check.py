@@ -207,6 +207,26 @@ class StableGateTest(TmtTestCase):
             ["untested: stable tool is missing tools/untested.test"],
         )
 
+    def test_stable_with_pristine_scaffold_test_fails(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "hollow", "--lang", "sh")
+        # Keep the scaffolded tools/hollow.test untouched; hand-edit the
+        # stage so `tmt check` itself exercises the gate.
+        data = load_registry(root)
+        data["tools"]["hollow"]["stage"] = "stable"
+        save_registry(root, data)
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            failures,
+            [
+                "hollow: tools/hollow.test is the unmodified scaffold; "
+                "write real assertions before promoting"
+            ],
+        )
+
     def test_stable_failing_test(self) -> None:
         root = self.make_repo()
         self._make_stable(root, "flaky")
@@ -321,6 +341,43 @@ class CompositionGateTest(TmtTestCase):
 
         self.assertEqual((returncode, failures), (0, []))
 
+    def test_sibling_mention_in_full_line_comment_is_exempt(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "doc-budgets", "--lang", "sh")
+        run_tmt(root, "new", "doc-scan", "--lang", "sh")
+        tool = root / "tools" / "doc-scan"
+        tool.write_text(
+            tool.read_text(encoding="utf-8")
+            + "  # Sibling doc-budgets composes this tool\n",
+            encoding="utf-8",
+        )
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual((returncode, failures), (0, []))
+
+    def test_same_sibling_mention_in_a_code_line_still_fails(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "doc-budgets", "--lang", "sh")
+        run_tmt(root, "new", "doc-scan", "--lang", "sh")
+        tool = root / "tools" / "doc-scan"
+        tool.write_text(
+            tool.read_text(encoding="utf-8")
+            + "printf '%s\\n' 'Sibling doc-budgets composes this tool'\n",
+            encoding="utf-8",
+        )
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            failures,
+            [
+                "doc-scan: uses sibling 'doc-budgets' without declaring "
+                "it in requires"
+            ],
+        )
+
     def test_id_embedded_in_longer_identifier_does_not_match(self) -> None:
         root = self.make_repo()
         run_tmt(root, "new", "files", "--lang", "sh")
@@ -336,6 +393,54 @@ class CompositionGateTest(TmtTestCase):
         returncode, failures, _ = self.check_json(root)
 
         self.assertEqual((returncode, failures), (0, []))
+
+
+class ConfigFieldTest(TmtTestCase):
+    """The optional `config` field validates and round-trips."""
+
+    def test_config_validates_and_round_trips(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "budgets", "--lang", "sh")
+        data = load_registry(root)
+        data["tools"]["budgets"]["config"] = [".doc-budgets.json"]
+        save_registry(root, data)
+
+        returncode, failures, warnings = self.check_json(root)
+
+        self.assertEqual((returncode, failures, warnings), (0, [], []))
+        self.assertEqual(
+            load_registry(root)["tools"]["budgets"]["config"],
+            [".doc-budgets.json"],
+        )
+
+    def test_config_must_be_an_array(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "budgets", "--lang", "sh")
+        data = load_registry(root)
+        data["tools"]["budgets"]["config"] = ".doc-budgets.json"
+        save_registry(root, data)
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("config", failures[0])
+        self.assertIn("array", failures[0])
+
+    def test_config_items_must_be_nonempty_unique_strings(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "budgets", "--lang", "sh")
+        data = load_registry(root)
+        data["tools"]["budgets"]["config"] = ["", 7, "a.json", "a.json"]
+        save_registry(root, data)
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(len(failures), 3, failures)
+        self.assertIn("config[0]", failures[0])
+        self.assertIn("config[1]", failures[1])
+        self.assertIn("duplicate", failures[2])
 
 
 class HumanOutputTest(TmtTestCase):

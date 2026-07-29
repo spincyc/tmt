@@ -3,7 +3,10 @@
 Both directions copy the executable plus its tmt.json entry and stamp
 ``origin`` with the source repo path, commit, content sha256, and — when the
 source has an ``origin`` remote — its ``url``. Vendoring and re-adoption are
-deliberate overwrites; divergence afterwards is allowed.
+deliberate overwrites; divergence afterwards is allowed. Declared ``config``
+files are never copied (config is repo-specific by nature); when the entry
+declares any, the result carries ``config`` so the CLI can remind the
+consumer to create them.
 """
 
 from __future__ import annotations
@@ -112,11 +115,15 @@ def vendor(root: Path, source: Path, tool_id: str) -> dict[str, Any]:
     stamped["origin"] = origin
     data["tools"][tool_id] = stamped
     registry.save(root, data)
-    return {
+    result: dict[str, Any] = {
         "id": tool_id,
         "origin": origin,
         "path": str(dest_tool.relative_to(root)),
     }
+    config = registry.effective(entry)["config"]
+    if config:
+        result["config"] = config
+    return result
 
 
 def adopt(root: Path, tool_id: str, dest: Path) -> dict[str, Any]:
@@ -156,4 +163,12 @@ def adopt(root: Path, tool_id: str, dest: Path) -> dict[str, Any]:
     stamped["origin"] = origin
     dest_data["tools"][tool_id] = stamped
     registry.save(dest_root, dest_data)
-    return {"id": tool_id, "origin": origin, "to": os.fspath(dest_root)}
+    result: dict[str, Any] = {
+        "id": tool_id,
+        "origin": origin,
+        "to": os.fspath(dest_root),
+    }
+    config = registry.effective(entry)["config"]
+    if config:
+        result["config"] = config
+    return result

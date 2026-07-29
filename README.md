@@ -25,8 +25,23 @@ unrelated project); it exposes the `tmt` console entry point.
 
 | Method | Command |
 |---|---|
-| `pipx` | `pipx install /path/to/tmt` |
+| `pipx` | `pipx install 'tmt-toolmaker @ git+https://github.com/spincyc/tmt.git@main'` |
+| `pipx`, local checkout | `pipx install /path/to/tmt` |
 | No install | `PYTHONPATH=/path/to/tmt/src python3 -m tmt --version` |
+
+The `main` ref is the development channel; installing it directly from GitHub
+requires Git and network access. A local-checkout install is a frozen snapshot
+of the working tree at install time — useful for development, but it does not
+track later commits.
+
+tmt never updates itself: an installed copy stays at whatever it was installed
+from while the repository advances. Refresh it explicitly:
+
+```sh
+pipx install --force \
+  'tmt-toolmaker @ git+https://github.com/spincyc/tmt.git@main'
+tmt --version
+```
 
 ## Quickstart
 

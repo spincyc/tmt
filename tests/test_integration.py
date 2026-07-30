@@ -160,6 +160,42 @@ class PrintHookTest(IntegrationTestCase):
         self.assert_json_error(result, "usage", 2)
 
 
+class PrintGenericHookTest(IntegrationTestCase):
+    """The host-neutral snippet: any session-start hook can run it."""
+
+    def test_json_carries_the_command_and_the_snippet(self) -> None:
+        payload = self.assert_json_success(
+            self.run_integration("print", "hook", "generic", "--json")
+        )
+
+        self.assertEqual(payload["command"], "tmt context")
+        self.assertIn("tmt context", payload["fragment"])
+        self.assertTrue(payload["fragment"].endswith("tmt context\n"))
+
+    def test_human_output_is_a_runnable_shell_snippet(self) -> None:
+        result = self.run_integration("print", "hook", "generic")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[-1], "tmt context")
+        for line in lines[:-1]:
+            self.assertTrue(line.startswith("#"), line)
+
+    def test_generic_cannot_be_installed(self) -> None:
+        # Only a manifest-owned integration has a lifecycle; the snippet
+        # is documentation the user pastes wherever their host wants it.
+        result = self.run_integration("install", "generic", "--json")
+
+        self.assert_json_error(result, "usage", 2)
+
+    def test_an_unknown_integration_is_still_a_usage_error(self) -> None:
+        result = self.run_integration("print", "hook", "emacs", "--json")
+
+        payload = self.assert_json_error(result, "usage", 2)
+        self.assertIn("generic", payload["error"])
+
+
 class PlanTest(IntegrationTestCase):
     def test_plan_previews_install_without_writing(self) -> None:
         payload = self.assert_json_success(

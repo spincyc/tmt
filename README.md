@@ -89,9 +89,10 @@ target so a stale registry is a build failure.
 |---|---|
 | Create the registry | `tmt init` |
 | Scaffold a tool, its smoke test, and its draft entry | `tmt new <id>` |
-| Survey the registry | `tmt list` |
+| Survey the registry | `tmt list [--stage draft\|stable]` |
 | Inspect one tool: entry, `--help`, long doc | `tmt show <id>` |
 | Run every gate, collect every failure | `tmt check` |
+| Gate one tool only, running nothing else | `tmt check <id>` |
 | Promote or demote through the gates | `tmt stage <id> <draft\|stable>` |
 | Change one entry field, validated before saving | `tmt set <id> <field> <value>` |
 | Rename a tool, its files, and every dependent | `tmt rename <id> <new-id>` |
@@ -101,7 +102,7 @@ target so a stale registry is a build failure.
 | Copy a tool in, stamped with provenance | `tmt vendor <source-repo> <id>` |
 | Lint and copy a tool out | `tmt adopt <id> --to <dest-repo>` |
 | Report or install the AGENTS.md habit fragment | `tmt agents [--write]` |
-| Print the canonical fragment or hook fragment | `tmt integration print agents\|hook claude` |
+| Print the canonical fragment or a hook fragment | `tmt integration print agents\|hook claude\|hook generic` |
 | Manage the Claude Code session hook | `tmt integration plan\|install\|check\|uninstall claude` |
 | Emit session context (the hook payload) | `tmt context` |
 | See command flags | `tmt COMMAND --help` |
@@ -124,6 +125,7 @@ Two commands execute the repository's own code:
 | Command | What it runs |
 |---|---|
 | `tmt check` | `tools/<id> --help` for every registered tool, and `tools/<id>.test` for every stable one |
+| `tmt check <id>` | the same gates, for that one tool only |
 | `tmt show <id>` | `tools/<id> --help` for that one tool |
 
 In a repository someone else wrote, those are that repository's programs
@@ -155,6 +157,7 @@ optional and reversible:
 | Fragment | Canonical 4-line AGENTS.md text, versioned | `tmt integration print agents` |
 | Marker block | Owned block in the repo's AGENTS.md, gated by `tmt check` | `tmt agents --write` (or `tmt init --agents`) |
 | Session hook | Claude Code `SessionStart` hook running `tmt context` | `tmt integration install claude` |
+| Any other host | The same command as a shell snippet to paste into that host's session-start hook | `tmt integration print hook generic` |
 
 `tmt context` prints the repo's tool list and the noted candidates not yet
 built at session start, and is fail-open by contract — it never breaks a
@@ -162,6 +165,12 @@ session. The hook lifecycle is manifest-owned and drift-safe: install is
 idempotent, uninstall removes only the unmodified owned entry, and every
 unrelated setting is preserved. See the
 [integration contract](docs/contracts/integration-v1.md).
+
+Only Claude Code has a managed lifecycle, because only a known settings file
+can be edited and reverted safely. The payload itself is host-neutral plain
+text, so any host with a session-start hook can run `tmt context` — that is
+what the `generic` fragment prints, with no manifest and nothing to
+uninstall.
 
 ## Documentation
 

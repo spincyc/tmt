@@ -21,6 +21,16 @@ MAX_LINES = 40
 MAX_LINE_CHARS = 120
 ELISION_SUFFIX = "more; read tmt.json)"
 
+HOOK_COMMAND = "tmt context"
+GENERIC_HOOK_FRAGMENT = f"""\
+# tmt session context: the repo's tool list and unbuilt candidates.
+# Run at session start, from the repository directory. Reads tmt.json and
+# the local note store; executes no tool. Always exits 0 and prints
+# nothing outside a tmt-enabled repository, so it is safe to run
+# unconditionally.
+{HOOK_COMMAND}
+"""
+
 
 def _single_line(value: str) -> str:
     """One printable line: repo-supplied text must not forge structure."""

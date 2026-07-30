@@ -210,8 +210,21 @@ def _integration_print(arguments: argparse.Namespace) -> int:
             return 0
         print(agentsmd.FRAGMENT)
         return 0
+    if arguments.integration_id == "generic":
+        fragment = sessioncontext.GENERIC_HOOK_FRAGMENT
+        if arguments.json:
+            _emit(
+                {"command": sessioncontext.HOOK_COMMAND, "fragment": fragment},
+                as_json=True,
+            )
+            return 0
+        sys.stdout.write(fragment)
+        return 0
     if arguments.integration_id != "claude":
-        raise TmtError("usage", "print hook requires the integration 'claude'")
+        raise TmtError(
+            "usage",
+            "print hook requires the integration 'claude' or 'generic'",
+        )
     fragment = claudehook.settings_fragment()
     if arguments.json:
         _emit({"fragment": fragment}, as_json=True)
@@ -353,6 +366,8 @@ def _list(arguments: argparse.Namespace) -> int:
             "stage": entry["stage"],
         }
         for tool_id, entry in sorted(data["tools"].items())
+        if arguments.stage is None
+        or registry.effective(entry)["stage"] == arguments.stage
     ]
     if arguments.json:
         _emit({"tools": rows}, as_json=True)
@@ -408,13 +423,21 @@ def _show(arguments: argparse.Namespace) -> int:
 
 
 def _check(arguments: argparse.Namespace) -> int:
-    failures, warnings = checks.run_checks(registry.require_root())
+    root = registry.require_root()
+    if arguments.id is None:
+        failures, warnings = checks.run_checks(root)
+    else:
+        failures, warnings = checks.run_tool_checks(root, arguments.id)
     status = "ok" if not failures else "failed"
     if arguments.json:
-        _emit(
-            {"failures": failures, "status": status, "warnings": warnings},
-            as_json=True,
-        )
+        payload: dict[str, Any] = {
+            "failures": failures,
+            "status": status,
+            "warnings": warnings,
+        }
+        if arguments.id is not None:
+            payload["id"] = arguments.id
+        _emit(payload, as_json=True)
     else:
         for failure in failures:
             print(f"FAIL {_single_line(failure)}")
@@ -642,10 +665,16 @@ def build_parser() -> argparse.ArgumentParser:
         "print", help="print the AGENTS.md fragment or a hook fragment"
     )
     integration_print.add_argument(
-        "target", choices=("agents", "hook"), metavar="TARGET"
+        "target",
+        choices=("agents", "hook"),
+        metavar="TARGET",
+        help="agents (the AGENTS.md fragment) or hook",
     )
     integration_print.add_argument(
-        "integration_id", nargs="?", metavar="INTEGRATION"
+        "integration_id",
+        nargs="?",
+        metavar="INTEGRATION",
+        help="for hook: claude (settings JSON) or generic (shell snippet)",
     )
     integration_print.add_argument(
         "--json", action="store_true", help=_JSON_HELP
@@ -727,6 +756,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_tools = commands.add_parser(
         "list", help="one line per tool: id, stage, purpose"
     )
+    list_tools.add_argument(
+        "--stage",
+        choices=registry.STAGES,
+        help="list only tools at this stage",
+    )
     list_tools.add_argument("--json", action="store_true", help=_JSON_HELP)
     list_tools.set_defaults(handler=_list)
 
@@ -738,7 +772,12 @@ def build_parser() -> argparse.ArgumentParser:
     show.set_defaults(handler=_show)
 
     check = commands.add_parser(
-        "check", help="run the full gate battery; collect every failure"
+        "check", help="run the gate battery; collect every failure"
+    )
+    check.add_argument(
+        "id",
+        nargs="?",
+        help="gate only this tool instead of the whole repository",
     )
     check.add_argument("--json", action="store_true", help=_JSON_HELP)
     check.set_defaults(handler=_check)

@@ -60,6 +60,7 @@ The tables list fields in addition to top-level `v`.
 | `agents --json` | `status`, absolute `path`, `fragment_version`; with `--write` also `changed`, `previous` |
 | `integration print agents --json` | `fragment`, `fragment_version` |
 | `integration print hook claude --json` | `fragment` (the settings.json hooks fragment object) |
+| `integration print hook generic --json` | `command` (`tmt context`), `fragment` (a commented shell snippet) |
 | `integration plan claude --json` | `changed`, `entry`, `settings`, `status` |
 | `integration install claude --json` | `status: "installed"`, `changed`, `entry`, `manifest`, `settings` |
 | `integration check claude --json` | `status: "ok"`, `"absent"`, or `"drifted"`, `settings` |
@@ -68,9 +69,9 @@ The tables list fields in addition to top-level `v`.
 | `rm ID --json` | `status: "removed"`, `id`, `removed_files` (bare names, sorted; empty with `--keep-files`) |
 | `rename ID NEW_ID --json` | `status: "renamed"`, `id` (the new id), `previous`, `moved_files`, `updated_dependents`, `stale_callers` |
 | `set ID FIELD VALUE --json` | `status: "set"`, `id`, `field`, `value` (parsed), `previous` (effective value before the change) |
-| `list --json` | `tools`: array of `{id, purpose, stage}`, id ascending |
+| `list [--stage STAGE] --json` | `tools`: array of `{id, purpose, stage}`, id ascending; `--stage` keeps only that stage |
 | `show ID --json` | `id`, `entry`, `help`, `doc` |
-| `check --json` | `status: "ok"` or `"failed"`, `failures`, `warnings` |
+| `check [ID] --json` | `status: "ok"` or `"failed"`, `failures`, `warnings`, plus `id` when one tool was named |
 | `stage ID STAGE --json` | `id`, `previous`, `stage`, `changed` |
 | `note SLUG --json` | `slug`, `built`, `recorded`; when recorded also `count` and nullable `message_id` |
 | `candidates --json` | `candidates`: array of `{built, count, notes, slug}`; with `--dismiss SLUG` instead `slug` and `dismissed` |
@@ -137,13 +138,18 @@ fail-open on every error path is a hard requirement of
 
 ```text
 tmt integration print agents [--json]
-tmt integration print hook claude [--json]
+tmt integration print hook {claude,generic} [--json]
 tmt integration {plan,install,check,uninstall} claude [--user] [--json]
 ```
 
 `print agents` emits the canonical AGENTS.md fragment (`fragment`,
 `fragment_version`); `print hook claude` emits the settings.json hooks
-fragment for externally managed configuration. Both change nothing.
+fragment for externally managed configuration; `print hook generic` emits a
+commented shell snippet whose last line is `tmt context`, for a host whose
+session-start hook runs a command rather than reading a settings file. All
+three change nothing. Only `claude` has a managed lifecycle: `generic` is
+text to paste, with no manifest, no ownership, and nothing to uninstall, so
+the lifecycle commands reject it with `usage` (exit 2).
 
 The lifecycle commands manage one tmt-owned `SessionStart` hook entry in the
 user-level Claude Code `settings.json` (`--user` is the default and only
@@ -270,10 +276,12 @@ question the gates do not police.
 ## list
 
 ```text
-tmt list [--json]
+tmt list [--stage {draft,stable}] [--json]
 ```
 
 One tool per line, id ascending: `id`, `stage`, `purpose`, tab-separated.
+`--stage` keeps only tools at that stage; an unknown stage is `usage`
+(exit 2), and a filter matching nothing is success with no rows.
 
 ## show
 
@@ -294,7 +302,7 @@ terminal through `tmt show`. An unregistered ID is `not-found` (exit 3).
 ## check
 
 ```text
-tmt check [--json]
+tmt check [ID] [--json]
 ```
 
 Runs the full gate battery and collects every failure; see
@@ -311,6 +319,15 @@ failure line for that tool and the battery continues with the next one. **The
 battery executes repository code** — `--help` for every registered tool and
 `tools/<id>.test` for every stable one, each in its own process session so a
 timeout kills descendants too.
+
+With `ID`, only that tool is gated: its own stage-appropriate gates, its own
+`requires` resolution, and cycles reachable from it. The JSON result gains
+`id`. Repository-level gates (a file with no entry, the AGENTS.md block) and
+every other tool's gates are out of scope, and no tool the caller did not
+name is executed — not running the rest is the point of scoping a check, so
+`tmt check ID` passing is never a claim about the repository. An unregistered
+`ID` is `not-found` (exit 3), distinct from a gate failure. A registry that
+cannot be read or validated still reports `registry: `-prefixed failures.
 
 ## stage
 

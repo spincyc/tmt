@@ -195,11 +195,30 @@ Guidance wiring: new `ai-guidance/15-tool-making.md` registered in
 AI_GUIDANCE.md's ordered list (respect the 250-word entry budget); per-repo
 AGENTS.md gains two lines pointing at tmt.json and `tmt new`.
 
+## Settled 2026-07-29 (post-audit triage)
+
+Decided with the owner after the audit; each was a live question and none
+should be re-raised without new evidence.
+
+| Question | Decision | Why |
+|---|---|---|
+| Should a caller left broken by `tmt rename` be a gate failure? | No — `rename` reports `stale_callers` and warns; no new gate | A "declared `requires` must appear in the body" gate false-positives on wrapper-thin tools that reach a sibling indirectly, and the warning already fires at the one moment the break is introduced |
+| Candidate threshold: per session or per repository? | Per repository, threshold 2, not configurable | Session identity is not something tmt has or wants; a config block is the ceremony this design exists to avoid. Revisit if the nudge proves noisy in practice |
+| Windows support? | No; Linux and macOS only | `tools/<id>.test` files are `sh`, and the composition idiom is a POSIX path expression. Supporting Windows is a different product, not a port |
+| `make verify` inside an extracted sdist runs a weaker battery (no git) | Accepted; it prints `SKIP check_tracked_paths, check_git_hygiene: not a git work tree` | A packager cannot have repository hygiene gates without a repository. Naming the skipped gates is honest; silently passing them would not be, and the 200-plus tests still run |
+| Should the note store migrate old aiq-held notes? | No migration | Verified 2026-07-29: no repository under `~/git` held any `tmt`-sourced note event, so there was nothing to migrate |
+
 ## Open questions
 
-- Candidate threshold default (2 notes, currently counted per repository
-  rather than per session) and where it is configured (tmt.json config
-  block?).
+- Whether `stage` gains a third value (`deprecated`) and what the gates do
+  with it: may a stable tool require a deprecated one, and is depending on
+  one a warning or a failure?
+- Whether `tmt vendor` learns to fetch (URL sources, a `tmt outdated`
+  sweep across vendored tools) given "vendoring, never linking" — the sync
+  semantics are the hard part, not the transport.
+- Whether a tool scaffolded by an older tmt can be upgraded to a newer
+  template once its body has been edited, and what "same tool, new
+  scaffold" would even mean.
 - tmt.json merge conflicts on concurrent branches: sorted keys + one object
   per tool should keep them rare; document `tmt check` as post-merge fixup.
 - Does tmt.json carry repo config beyond `tools` (default lang, caps), or

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 
 from _support import (
     TmtTestCase,
@@ -441,6 +442,143 @@ class ConfigFieldTest(TmtTestCase):
         self.assertIn("config[0]", failures[0])
         self.assertIn("config[1]", failures[1])
         self.assertIn("duplicate", failures[2])
+
+
+class ScopedCheckTest(TmtTestCase):
+    """`tmt check ID` gates one tool and runs nothing else."""
+
+    def _marker_tool(self, root: Path, tool_id: str) -> Path:
+        """A registered sh tool that records the fact it was executed."""
+        self.assertEqual(run_tmt(root, "new", tool_id).returncode, 0)
+        marker = root / f"{tool_id}.ran"
+        write_executable(
+            root / "tools" / tool_id,
+            "#!/bin/sh\n"
+            f'touch "$(dirname "$0")/../{tool_id}.ran"\n'
+            'case "$1" in --help) echo usage; exit 0;; esac\n',
+        )
+        self.assertEqual(
+            run_tmt(root, "set", tool_id, "lang", "sh").returncode, 0
+        )
+        return marker
+
+    def test_scoped_check_executes_only_the_named_tool(self) -> None:
+        root = self.make_repo()
+        named = self._marker_tool(root, "alpha")
+        other = self._marker_tool(root, "beta")
+        named.unlink(missing_ok=True)
+        other.unlink(missing_ok=True)
+
+        result = run_tmt(root, "check", "alpha", "--json")
+
+        payload = self.assert_json_success(result)
+        self.assertEqual(payload["id"], "alpha")
+        self.assertEqual(payload["failures"], [])
+        self.assertTrue(named.exists(), "the named tool was not run")
+        self.assertFalse(other.exists(), "an unnamed tool was executed")
+
+    def test_scoped_check_ignores_another_tools_failure(self) -> None:
+        root = self.make_repo()
+        for tool_id in ("alpha", "beta"):
+            self.assertEqual(run_tmt(root, "new", tool_id).returncode, 0)
+        (root / "tools" / "beta").unlink()
+
+        scoped = run_tmt(root, "check", "alpha", "--json")
+        self.assert_json_success(scoped)
+
+        whole = run_tmt(root, "check", "--json")
+        self.assertEqual(whole.returncode, 1)
+        self.assertTrue(self.parse_single_json(whole.stdout)["failures"])
+
+    def test_scoped_check_reports_its_own_failure(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        (root / "tools" / "alpha").chmod(0o644)
+
+        result = run_tmt(root, "check", "alpha", "--json")
+
+        self.assertEqual(result.returncode, 1)
+        payload = self.parse_single_json(result.stdout)
+        self.assertEqual(payload["status"], "failed")
+        self.assertTrue(
+            any("executable bit" in failure for failure in payload["failures"]),
+            payload["failures"],
+        )
+
+    def test_scoped_check_reports_its_own_unresolved_requires(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        data = load_registry(root)
+        data["tools"]["alpha"]["requires"] = ["ghost"]
+        save_registry(root, data)
+
+        result = run_tmt(root, "check", "alpha", "--json")
+
+        self.assertEqual(result.returncode, 1)
+        payload = self.parse_single_json(result.stdout)
+        self.assertTrue(
+            any("ghost" in failure for failure in payload["failures"]),
+            payload["failures"],
+        )
+
+    def test_scoped_check_of_an_unknown_tool_is_not_found(self) -> None:
+        root = self.make_repo()
+        self.assert_json_error(
+            run_tmt(root, "check", "ghost", "--json"), "not-found", 3
+        )
+
+    def test_whole_repo_check_payload_has_no_id(self) -> None:
+        root = self.make_repo()
+        payload = self.assert_json_success(run_tmt(root, "check", "--json"))
+        self.assertNotIn("id", payload)
+
+
+class ListFilterTest(TmtTestCase):
+    def _repo_with_both_stages(self) -> Path:
+        root = self.make_repo()
+        for tool_id in ("alpha", "beta"):
+            self.assertEqual(run_tmt(root, "new", tool_id).returncode, 0)
+        (root / "tools" / "alpha.test").write_text(
+            PASSING_TEST.format(tool_id="alpha"), encoding="utf-8"
+        )
+        (root / "tools" / "alpha.test").chmod(0o755)
+        self.assertEqual(
+            run_tmt(root, "stage", "alpha", "stable").returncode, 0
+        )
+        return root
+
+    def test_stage_filter_selects_one_stage(self) -> None:
+        root = self._repo_with_both_stages()
+
+        stable = self.assert_json_success(
+            run_tmt(root, "list", "--stage", "stable", "--json")
+        )
+        self.assertEqual([row["id"] for row in stable["tools"]], ["alpha"])
+
+        draft = self.assert_json_success(
+            run_tmt(root, "list", "--stage", "draft", "--json")
+        )
+        self.assertEqual([row["id"] for row in draft["tools"]], ["beta"])
+
+    def test_unfiltered_list_shows_both(self) -> None:
+        root = self._repo_with_both_stages()
+        payload = self.assert_json_success(run_tmt(root, "list", "--json"))
+        self.assertEqual(
+            [row["id"] for row in payload["tools"]], ["alpha", "beta"]
+        )
+
+    def test_stage_filter_human_output(self) -> None:
+        root = self._repo_with_both_stages()
+        result = run_tmt(root, "list", "--stage", "draft")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+        self.assertTrue(result.stdout.startswith("beta\tdraft\t"))
+
+    def test_unknown_stage_is_a_usage_error(self) -> None:
+        root = self.make_repo()
+        self.assert_json_error(
+            run_tmt(root, "list", "--stage", "retired", "--json"), "usage", 2
+        )
 
 
 class HumanOutputTest(TmtTestCase):

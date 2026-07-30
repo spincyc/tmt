@@ -180,24 +180,91 @@ def stable_gate_failures(
     return failures
 
 
-def run_checks(root: Path) -> tuple[list[str], list[str]]:
-    """Run the full battery; return (failures, warnings)."""
-    warnings: list[str] = []
+def _load_for_checks(
+    root: Path,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """The registry to check, or ``None`` plus registry-level failures."""
     path = root / registry.REGISTRY_FILENAME
     if not path.is_file():
-        return (
-            [f"registry: {registry.REGISTRY_FILENAME} does not exist"],
-            warnings,
-        )
+        return None, [
+            f"registry: {registry.REGISTRY_FILENAME} does not exist"
+        ]
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        return [f"registry: tmt.json does not parse: {error}"], warnings
+        return None, [f"registry: tmt.json does not parse: {error}"]
     except OSError as error:
-        return [f"registry: tmt.json cannot be read: {error}"], warnings
+        return None, [f"registry: tmt.json cannot be read: {error}"]
     validation = registry.validate(data)
     if validation:
-        return [f"registry: {message}" for message in validation], warnings
+        return None, [f"registry: {message}" for message in validation]
+    return data, []
+
+
+def _gate_one(
+    root: Path, tool_id: str, tools: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Every gate that applies to one tool at its declared stage."""
+    failures: list[str] = []
+    warnings: list[str] = []
+    entry = registry.effective(tools[tool_id])
+    tool = root / "tools" / tool_id
+    if not tool.is_file():
+        return (
+            [f"{tool_id}: tools/{tool_id} missing for tmt.json entry"],
+            warnings,
+        )
+    try:
+        paths.resolve_within(root, tool, label=f"tools/{tool_id}")
+    except TmtError as error:
+        return [f"{tool_id}: {error}"], warnings
+    try:
+        failures.extend(_check_tool(tool_id, entry, tool))
+        failures.extend(undeclared_composition(tool_id, entry, tool, tools))
+        if entry["stage"] == "stable":
+            stable_failures, stable_warnings = _check_stable(
+                root, tool_id, entry, tool, tools
+            )
+            failures.extend(stable_failures)
+            warnings.extend(stable_warnings)
+    except TmtError as error:
+        failures.append(f"{tool_id}: {error}")
+    return failures, warnings
+
+
+def run_tool_checks(
+    root: Path, tool_id: str
+) -> tuple[list[str], list[str]]:
+    """Gate one tool only: its own gates and its own ``requires``.
+
+    Repo-level gates (stray files, the AGENTS.md block) and other tools'
+    gates are out of scope, so this never executes a tool the caller did
+    not name — the point of scoping a check is not running the rest.
+    """
+    data, registry_failures = _load_for_checks(root)
+    if data is None:
+        return registry_failures, []
+    tools: dict[str, Any] = data["tools"]
+    if tool_id not in tools:
+        raise TmtError(
+            "not-found", f"tool {tool_id!r} is not registered in tmt.json"
+        )
+    failures, warnings = _gate_one(root, tool_id, tools)
+    for dependency in registry.effective(tools[tool_id])["requires"]:
+        if dependency not in tools:
+            failures.append(
+                f"{tool_id}: requires {dependency!r} which is not registered"
+            )
+    failures.extend(_find_cycles(tools, start=tool_id))
+    return failures, warnings
+
+
+def run_checks(root: Path) -> tuple[list[str], list[str]]:
+    """Run the full battery; return (failures, warnings)."""
+    warnings: list[str] = []
+    data, registry_failures = _load_for_checks(root)
+    if data is None:
+        return registry_failures, warnings
     failures: list[str] = []
     failures.extend(agentsmd.check_failures(root))
     tools: dict[str, Any] = data["tools"]
@@ -205,31 +272,9 @@ def run_checks(root: Path) -> tuple[list[str], list[str]]:
     for name in sorted(_tool_files(tools_dir) - set(tools)):
         failures.append(f"tools/{name}: file has no tmt.json entry")
     for tool_id in sorted(tools):
-        entry = registry.effective(tools[tool_id])
-        tool = tools_dir / tool_id
-        if not tool.is_file():
-            failures.append(
-                f"{tool_id}: tools/{tool_id} missing for tmt.json entry"
-            )
-            continue
-        try:
-            paths.resolve_within(root, tool, label=f"tools/{tool_id}")
-        except TmtError as error:
-            failures.append(f"{tool_id}: {error}")
-            continue
-        try:
-            failures.extend(_check_tool(tool_id, entry, tool))
-            failures.extend(
-                undeclared_composition(tool_id, entry, tool, tools)
-            )
-            if entry["stage"] == "stable":
-                stable_failures, stable_warnings = _check_stable(
-                    root, tool_id, entry, tool, tools
-                )
-                failures.extend(stable_failures)
-                warnings.extend(stable_warnings)
-        except TmtError as error:
-            failures.append(f"{tool_id}: {error}")
+        tool_failures, tool_warnings = _gate_one(root, tool_id, tools)
+        failures.extend(tool_failures)
+        warnings.extend(tool_warnings)
     failures.extend(_check_requires(tools))
     return failures, warnings
 
@@ -298,7 +343,10 @@ def _check_requires(tools: dict[str, Any]) -> list[str]:
     return failures
 
 
-def _find_cycles(tools: dict[str, Any]) -> list[str]:
+def _find_cycles(
+    tools: dict[str, Any], *, start: str | None = None
+) -> list[str]:
+    """Cycles in the requires graph, or only those reachable from ``start``."""
     graph = {
         tool_id: [
             dependency
@@ -309,15 +357,15 @@ def _find_cycles(tools: dict[str, Any]) -> list[str]:
     }
     failures: list[str] = []
     state: dict[str, int] = {}  # 1 = on stack, 2 = finished
-    for start in sorted(graph):
-        if start in state:
+    roots = sorted(graph) if start is None else [start]
+    for root_node in roots:
+        if root_node in state:
             continue
-        stack: list[str] = []
         # Iterative DFS: a pathological requires chain must not exhaust
         # the interpreter stack.
-        work: list[tuple[str, int]] = [(start, 0)]
-        state[start] = 1
-        stack.append(start)
+        stack: list[str] = [root_node]
+        work: list[tuple[str, int]] = [(root_node, 0)]
+        state[root_node] = 1
         while work:
             node, index = work[-1]
             if index < len(graph[node]):

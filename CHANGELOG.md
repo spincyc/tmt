@@ -40,6 +40,16 @@ and the missing registry-editing verbs.
   `tmt stage` owns promotion, `vendor`/`adopt` own provenance.
 - `tmt candidates --dismiss SLUG`: forget every note recorded for a slug, so a
   candidate that will never be built stops appearing in session context.
+- `tmt check <id>`: gate one tool — its own stage-appropriate gates, its own
+  `requires`, and cycles reachable from it. No tool the caller did not name is
+  executed, which is the point: an incremental check no longer runs every
+  registered tool's `--help` and every stable test. The JSON result gains `id`,
+  and an unregistered id is `not-found` (exit 3) rather than a gate failure.
+- `tmt list --stage draft|stable`: survey one stage of a large registry.
+- `tmt integration print hook generic`: the session-start command as a
+  commented shell snippet, for hosts other than Claude Code. The payload was
+  always host-neutral plain text; only the managed lifecycle is Claude-specific,
+  so the lifecycle commands reject `generic` with `usage` (exit 2).
 - Stable error codes `containment` (exit 3, a path resolving outside its
   repository) and `io-error` (exit 3, an environment failure).
 - A tool-id length cap of 64 characters, in both the validator and

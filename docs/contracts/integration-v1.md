@@ -164,3 +164,16 @@ verify, a drifted state is always recoverable by hand.
 
 Only the `--user` scope exists; it is the default and passing `--user` is
 optional.
+
+## Other hosts
+
+The payload is host-neutral plain text, so any host with a session-start hook
+can run `tmt context`. Only Claude Code gets a managed lifecycle, because a
+lifecycle needs a known settings file that tmt can edit and revert safely.
+
+`tmt integration print hook generic` prints that command as a commented shell
+snippet — the last line is `tmt context`, everything above it is comment — for
+pasting into whatever the host reads. There is no manifest, no ownership, and
+nothing to uninstall, so `plan`, `install`, `check`, and `uninstall` reject
+`generic` with `usage` (exit 2). Running the command outside a tmt-enabled
+repository prints nothing and exits 0, so it is safe to wire unconditionally.

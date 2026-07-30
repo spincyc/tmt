@@ -15,6 +15,16 @@ into a shipped one.
 
 ## [Unreleased]
 
+### Changed
+
+- tmt is distributed from this repository only, matching aiq: `pipx install
+  'tmt-toolmaker @ git+…@main'`, or a tag for a stable pin. The PyPI publish
+  workflow is removed — it worked up to the upload and failed only for want of
+  a trusted publisher, and a second channel is a second thing to keep honest.
+  The tag-versus-version guard moved into CI, because a tag is now the only
+  stable pin: a tag whose commit declares a different version would install as
+  that other version with no warning.
+
 ### Fixed
 
 - **Concurrent tmt processes silently lost one another's work.** Every

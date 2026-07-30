@@ -21,18 +21,21 @@ them: sessions read `tmt.json` and execute `tools/<id>` directly.
 ## Install
 
 tmt supports Python 3.11+ on Linux and macOS with zero runtime dependencies.
-The distribution is `tmt-toolmaker` (the `tmt` name on PyPI belongs to an
-unrelated project); it exposes the `tmt` console entry point.
+It installs from this repository — there is no PyPI release — as the
+distribution `tmt-toolmaker`, exposing the `tmt` console entry point. (The
+`tmt` name on PyPI belongs to an unrelated project; the distribution name
+would avoid that collision if tmt is ever published.)
 
 | Method | Command |
 |---|---|
 | `pipx` | `pipx install 'tmt-toolmaker @ git+https://github.com/spincyc/tmt.git@main'` |
+| `pipx`, a released tag | `pipx install 'tmt-toolmaker @ git+https://github.com/spincyc/tmt.git@v0.1.0a6'` |
 | `pipx`, local checkout | `pipx install /path/to/tmt` |
 | No install | `PYTHONPATH=/path/to/tmt/src python3 -m tmt --version` |
 
-The `main` ref is the development channel; installing it directly from GitHub
-requires Git and network access. A local-checkout install is a frozen snapshot
-of the working tree at install time — useful for development, but it does not
+The `main` ref is the development channel and a tag is the stable one; either
+requires Git and network access at install time. A local-checkout install is a
+frozen snapshot of the working tree — useful for development, but it does not
 track later commits.
 
 tmt never updates itself: an installed copy stays at whatever it was installed

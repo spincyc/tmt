@@ -30,3 +30,15 @@ jobs:
       - run: python -m pip install --upgrade build twine
       - run: python -m build
       - run: python -m twine check dist/*
+      # tmt installs from git, so a tag is what a user pins. A tag whose
+      # commit declares a different version would install as that other
+      # version with no warning.
+      - name: Check the tag matches the packaged version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          built="$(ls dist/*.tar.gz | sed -E 's/.*-([^-]+)\.tar\.gz/\1/')"
+          if [ "$tag" != "$built" ]; then
+            echo "tag $tag does not match built version $built" >&2
+            exit 1
+          fi

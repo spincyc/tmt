@@ -158,10 +158,30 @@ copying with provenance:
 - Divergence after vendoring is allowed (per-repo fitness beats shared-dep
   correctness); re-vendoring is a deliberate overwrite.
 
-## Naming (decided: `tmt-toolmaker` on PyPI, `tmt` on the command line)
+## Distribution (decided 2026-07-30: install from git, no PyPI)
+
+tmt ships the way aiq does: `pipx install 'tmt-toolmaker @ git+<repo>@main'`,
+or a tag for a stable pin. There is no package index release.
+
+The alternative was finishing a PyPI publish — the machinery existed and
+worked up to the point of upload, failing only because PyPI needs a trusted
+publisher created by the account owner. It was dropped rather than completed
+because tmt is a personal tool with a sibling that already distributes this
+way, and a second channel is a second thing to keep honest: two version
+truths, a publish credential, and a release step that can fail after a tag is
+already public. Revisit if tmt is meant for people who should not need Git —
+that, not convenience, is what PyPI buys.
+
+Consequences accepted: installing requires Git and network access, `pipx
+install --force` is the upgrade path, and a tag is the only stable pin — so CI
+fails a tag whose commit declares a different version, because a tag-pinned
+install would otherwise resolve to a version nobody named.
+
+## Naming (decided: `tmt-toolmaker` as the distribution, `tmt` on the command line)
 
 The distribution is `tmt-toolmaker` because teemtee's Test Management Tool
-owns `tmt` on PyPI (aiq precedent: `aiq-workqueue`). The console script stays
+owns `tmt` on PyPI (aiq precedent: `aiq-workqueue`), which keeps the name free
+if tmt is ever published. The console script stays
 `tmt`: decided by the owner 2026-07-29, accepting that it collides on a
 machine that also has teemtee's package installed. The habit this tool exists
 to build is typed dozens of times a session and is quoted verbatim in every

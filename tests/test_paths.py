@@ -3,6 +3,10 @@
 A symlink is not a licence to leave. Every write path (init, new, agents
 --write, vendor) resolves its target first and refuses one that lands
 outside the repository root, and the registry save is atomic.
+
+Atomic is not serialized, so the mutation lock is tested here too: two
+processes that each load, mutate, and save must not lose one another's
+work, and a process that cannot get the lock must fail rather than hang.
 """
 
 from __future__ import annotations
@@ -11,13 +15,16 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 
 from _support import (
     SRC_DIR,
     TmtTestCase,
+    git_init_commit,
     load_registry,
+    run_git,
     run_tmt,
     save_registry,
     write_executable,
@@ -25,6 +32,73 @@ from _support import (
 
 PLANT_STALE_STAGE = "open(f'.tmt.json.{os.getpid()}.tmt-tmp', 'w').close()"
 RESTRICTIVE_UMASK = "os.umask(0o077)"
+
+CONCURRENT_WORKERS = 6
+
+# A dismiss stalled in its own window: it reads every record, filters,
+# and rewrites the file, and a note appended between the read and the
+# write used to be erased.
+SLOW_DISMISS = """
+import sys, time
+from pathlib import Path
+from tmt import notestore
+root, reading = Path(sys.argv[1]), Path(sys.argv[2])
+read_records = notestore._read
+def stall(target):
+    records = read_records(target)
+    reading.write_text("1", encoding="utf-8")
+    time.sleep(2)
+    return records
+notestore._read = stall
+notestore.dismiss(root, sys.argv[3])
+"""
+
+HOLD_THE_LOCK = """
+import sys, time
+from pathlib import Path
+from tmt import paths
+root, ready, release = (Path(argument) for argument in sys.argv[1:4])
+with paths.locked(root):
+    ready.write_text("1", encoding="utf-8")
+    deadline = time.monotonic() + 120
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+"""
+
+
+def _spawn(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.fspath(SRC_DIR)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    if env:
+        environment.update(env)
+    return subprocess.Popen(
+        command,
+        cwd=None if cwd is None else os.fspath(cwd),
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def spawn_python(program: str, *arguments: str) -> subprocess.Popen[str]:
+    """Start ``program`` in a child interpreter that can import tmt."""
+    return _spawn([sys.executable, "-c", program, *arguments])
+
+
+def spawn_tmt(
+    cwd: Path, *arguments: str, env: dict[str, str] | None = None
+) -> subprocess.Popen[str]:
+    """Start ``tmt`` without waiting: concurrency needs several at once."""
+    return _spawn(
+        [sys.executable, "-m", "tmt", *arguments], cwd=cwd, env=env
+    )
 
 
 def run_tmt_after(
@@ -250,6 +324,138 @@ class AtomicWriteTest(TmtTestCase):
         self.assertIn(
             "alpha", json.loads(real.read_text(encoding="utf-8"))["tools"]
         )
+
+
+class MutationLockTest(TmtTestCase):
+    """One process must not silently drop another's work.
+
+    `tmt new` is where the lost update was found: two of them each loaded
+    tmt.json, added an entry, and the second save dropped the first one's
+    tool, leaving scaffolded files with no entry and `tmt check` red. The
+    note store lost notes the same way.
+    """
+
+    def setUp(self) -> None:
+        # `tmt note` mirrors to aiq when it is on PATH; an empty PATH keeps
+        # these tests off any real journal.
+        self.sandbox = {
+            "HOME": os.fspath(self.make_dir()),
+            "PATH": os.fspath(self.make_dir()),
+        }
+
+    def reap(self, child: subprocess.Popen[str]) -> None:
+        """Close the pipes and wait, unless the body already did."""
+        if child.returncode is None:
+            child.communicate(timeout=120)
+
+    def hold_the_lock(self, root: Path) -> tuple[subprocess.Popen[str], Path]:
+        """Start a child holding ``root``'s lock; release it on cleanup."""
+        signals = self.make_dir()
+        ready = signals / "ready"
+        release = signals / "release"
+        holder = spawn_python(
+            HOLD_THE_LOCK,
+            os.fspath(root),
+            os.fspath(ready),
+            os.fspath(release),
+        )
+
+        def finish() -> None:
+            release.touch()
+            self.reap(holder)
+
+        self.addCleanup(finish)
+        deadline = time.monotonic() + 60
+        while not ready.exists() and time.monotonic() < deadline:
+            self.assertIsNone(holder.poll(), "the lock holder died early")
+            time.sleep(0.02)
+        self.assertTrue(ready.exists(), "the lock holder never acquired")
+        return holder, release
+
+    def test_concurrent_new_keeps_every_entry(self) -> None:
+        root = self.make_repo()
+        ids = [f"t{index}" for index in range(CONCURRENT_WORKERS)]
+        workers: list[tuple[str, subprocess.Popen[str]]] = []
+        for tool_id in ids:
+            worker = spawn_tmt(root, "new", tool_id, env=self.sandbox)
+            self.addCleanup(self.reap, worker)
+            workers.append((tool_id, worker))
+        for tool_id, worker in workers:
+            _, errors = worker.communicate(timeout=120)
+            self.assertEqual(worker.returncode, 0, f"{tool_id}: {errors}")
+
+        self.assertEqual(sorted(load_registry(root)["tools"]), ids)
+        scaffolded = sorted(
+            path.name
+            for path in (root / "tools").iterdir()
+            if not path.name.endswith(".test")
+        )
+        self.assertEqual(scaffolded, ids)
+        self.assertEqual(self.check_json(root), (0, [], []))
+
+    def test_a_held_lock_fails_a_mutation_instead_of_hanging(self) -> None:
+        root = self.make_repo()
+        self.hold_the_lock(root)
+
+        started = time.monotonic()
+        result = run_tmt(
+            root, "note", "reused-derivation", "--json", env=self.sandbox
+        )
+        waited = time.monotonic() - started
+
+        payload = self.assert_json_error(result, "io-error", 3)
+        self.assertIn("lock", payload["error"])
+        self.assertIn("gave up waiting", payload["error"])
+        self.assertLess(waited, 60, "the bounded wait was not bounded")
+
+    def test_a_waiting_mutation_lands_once_the_lock_is_free(self) -> None:
+        root = self.make_repo()
+        holder, release = self.hold_the_lock(root)
+
+        release.touch()
+        self.reap(holder)
+        result = run_tmt(
+            root, "note", "reused-derivation", "--json", env=self.sandbox
+        )
+
+        self.assertEqual(self.assert_json_success(result)["count"], 1)
+
+    def test_a_note_taken_during_a_dismiss_is_not_erased(self) -> None:
+        root = self.make_repo()
+        for _ in range(2):
+            self.assertEqual(
+                run_tmt(root, "note", "gone", env=self.sandbox).returncode, 0
+            )
+        reading = self.make_dir() / "reading"
+        dismisser = spawn_python(
+            SLOW_DISMISS, os.fspath(root), os.fspath(reading), "gone"
+        )
+        self.addCleanup(self.reap, dismisser)
+        deadline = time.monotonic() + 60
+        while not reading.exists() and time.monotonic() < deadline:
+            self.assertIsNone(dismisser.poll(), "the dismiss died early")
+            time.sleep(0.02)
+        self.assertTrue(reading.exists(), "the dismiss never read the store")
+
+        noted = run_tmt(root, "note", "keeper", env=self.sandbox)
+
+        self.assertEqual(noted.returncode, 0, noted.stderr)
+        _, errors = dismisser.communicate(timeout=120)
+        self.assertEqual(dismisser.returncode, 0, errors)
+        remaining = self.assert_json_success(
+            run_tmt(root, "candidates", "--json", env=self.sandbox)
+        )["candidates"]
+        self.assertEqual([row["slug"] for row in remaining], ["keeper"])
+
+    def test_the_lock_never_becomes_a_work_tree_file(self) -> None:
+        root = self.make_repo()
+        git_init_commit(root)
+
+        result = run_tmt(root, "note", "reused-derivation", env=self.sandbox)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        self.assertEqual(run_git(root, "status", "--porcelain"), "")
+        self.assertTrue((root / ".git" / "tmt" / "lock").is_file())
 
 
 class FileModeTest(TmtTestCase):

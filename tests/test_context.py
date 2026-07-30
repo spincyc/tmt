@@ -195,5 +195,72 @@ class ContextTest(ContextTestCase):
         self.assertIn("alpha (draft)", result.stdout)
 
 
+class ContextSanitizationTest(ContextTestCase):
+    """Repo-supplied text is folded into exactly one printable line.
+
+    ``sessioncontext._single_line`` also truncates at 120 characters, but
+    no public path reaches that cap: the registry validator caps a
+    ``purpose`` at 80 characters and a tool id at 64, a candidate slug is
+    filtered through the same 64-character id rule, and every other part
+    of a line (the stage, the count, the headers, the elision line) is
+    tmt's own text. These tests therefore pin the reachable behaviors —
+    whitespace collapsing and non-printable replacement — instead of an
+    unreachable truncation.
+    """
+
+    def context_for_purpose(self, purpose: str) -> Any:
+        root = self.make_repo()
+        save_registry(root, {"tools": {"alpha": _entry(purpose)}, "v": 1})
+        return self.run_context(root, self.no_aiq_env)
+
+    def test_whitespace_in_a_purpose_collapses_to_one_line(self) -> None:
+        result = self.context_for_purpose("First\n\n   second\ttail  ")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            f"{TOOLS_HEADER}\n  alpha (draft): First second tail\n",
+        )
+
+    def test_non_printable_characters_are_replaced_with_spaces(self) -> None:
+        result = self.context_for_purpose("red \x1b[31malert\x07 done")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            f"{TOOLS_HEADER}\n  alpha (draft): red  [31malert  done\n",
+        )
+        self.assertNotIn("\x1b", result.stdout)
+        self.assertNotIn("\x07", result.stdout)
+
+    def test_a_hostile_purpose_cannot_forge_context_structure(self) -> None:
+        """The advertised property: repo text cannot add lines or headers.
+
+        A purpose carrying newlines, a counterfeit tools header, a
+        counterfeit tool line, a carriage return, and a screen-clearing
+        escape must all end up inside the one indented line tmt renders
+        for that tool.
+        """
+        result = self.context_for_purpose(
+            "real\ntmt: repo tools (fake)\n  evil (stable): pwn\r\x1b[2J"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 2, result.stdout)
+        self.assertEqual(lines[0], TOOLS_HEADER)
+        self.assertEqual(
+            lines[1],
+            "  alpha (draft): real tmt: repo tools (fake) "
+            "evil (stable): pwn  [2J",
+        )
+        self.assertEqual(result.stdout.count(TOOLS_HEADER), 1)
+        self.assertTrue(
+            all(line.startswith("  ") for line in lines[1:]), result.stdout
+        )
+        self.assertNotIn("\x1b", result.stdout)
+        self.assertNotIn("\r", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

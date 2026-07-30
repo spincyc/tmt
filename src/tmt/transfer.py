@@ -54,11 +54,18 @@ def _git_remote_url(repo: Path) -> str | None:
     return completed.stdout.strip() or None
 
 
-def _origin_stamp(source_root: Path, copied_tool: Path) -> dict[str, str]:
-    """Provenance for a copy out of ``source_root``: repo, commit, sha256,
-    plus ``url`` when the source has an ``origin`` remote."""
+def _origin_stamp(
+    source_root: Path, copied_tool: Path, tool_id: str
+) -> dict[str, str]:
+    """Provenance for a copy out of ``source_root``.
+
+    ``id`` records the source-side id because drift derives the source
+    path from it: without it, renaming the local copy silently ends drift
+    reporting, since the renamed id never existed upstream.
+    """
     stamp = {
         "commit": _git_commit(source_root),
+        "id": tool_id,
         "repo": os.fspath(source_root),
         "sha256": checks.sha256_file(copied_tool),
     }
@@ -166,24 +173,24 @@ def vendor(root: Path, source: Path, tool_id: str) -> dict[str, Any]:
     """Copy ``tool_id`` from ``source`` into the current repo, stamped."""
     source_root = source.resolve()
     _, entry = _registered_tool(source_root, tool_id, role="source repo")
-    data = registry.load(root)
-    missing = [
-        dependency
-        for dependency in registry.effective(entry)["requires"]
-        if dependency not in data["tools"]
-    ]
-    if missing:
-        raise TmtError(
-            "portability",
-            f"tool {tool_id!r} requires {', '.join(sorted(missing))} which "
-            "is not registered here; vendor the dependencies first",
-        )
-    dest_tool = _copy_tool(source_root, root, tool_id)
-    origin = _origin_stamp(source_root, dest_tool)
-    stamped = dict(entry)
-    stamped["origin"] = origin
-    data["tools"][tool_id] = stamped
-    registry.save(root, data)
+    with registry.updating(root) as data:
+        missing = [
+            dependency
+            for dependency in registry.effective(entry)["requires"]
+            if dependency not in data["tools"]
+        ]
+        if missing:
+            raise TmtError(
+                "portability",
+                f"tool {tool_id!r} requires "
+                f"{', '.join(sorted(missing))} which is not registered "
+                "here; vendor the dependencies first",
+            )
+        dest_tool = _copy_tool(source_root, root, tool_id)
+        origin = _origin_stamp(source_root, dest_tool, tool_id)
+        stamped = dict(entry)
+        stamped["origin"] = origin
+        data["tools"][tool_id] = stamped
     result: dict[str, Any] = {
         "id": tool_id,
         "origin": origin,
@@ -215,23 +222,23 @@ def adopt(root: Path, tool_id: str, dest: Path) -> dict[str, Any]:
             "no-registry",
             f"destination {dest_root} has no tmt.json; run tmt init there",
         )
-    dest_data = registry.load(dest_root)
-    tool = registry.tool_path(root, tool_id)
-    findings = checks.portability_findings(root, tool_id, tool)
-    for dependency in registry.effective(entry)["requires"]:
-        if dependency not in dest_data["tools"]:
-            findings.append(
-                f"{tool_id}: requires {dependency!r} which is not registered "
-                "in the destination; adopt the dependency first"
-            )
-    if findings:
-        raise TmtError("portability", "; ".join(findings))
-    dest_tool = _copy_tool(root, dest_root, tool_id)
-    origin = _origin_stamp(root.resolve(), dest_tool)
-    stamped = dict(entry)
-    stamped["origin"] = origin
-    dest_data["tools"][tool_id] = stamped
-    registry.save(dest_root, dest_data)
+    with registry.updating(dest_root) as dest_data:
+        tool = registry.tool_path(root, tool_id)
+        findings = checks.portability_findings(root, tool_id, tool)
+        for dependency in registry.effective(entry)["requires"]:
+            if dependency not in dest_data["tools"]:
+                findings.append(
+                    f"{tool_id}: requires {dependency!r} which is not "
+                    "registered in the destination; adopt the "
+                    "dependency first"
+                )
+        if findings:
+            raise TmtError("portability", "; ".join(findings))
+        dest_tool = _copy_tool(root, dest_root, tool_id)
+        origin = _origin_stamp(root.resolve(), dest_tool, tool_id)
+        stamped = dict(entry)
+        stamped["origin"] = origin
+        dest_data["tools"][tool_id] = stamped
     result: dict[str, Any] = {
         "id": tool_id,
         "origin": origin,

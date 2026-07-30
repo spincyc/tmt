@@ -4,8 +4,10 @@ Draft gates apply to all tools, including the undeclared-composition gate
 (a sibling tool id used in the body must be declared in ``requires``);
 stable tools add the test (which must differ from the unmodified
 scaffold), dependency-stage, portability, and origin-drift gates. Origin
-drift is always a warning. One repo-level gate: a tmt marker block
-present in AGENTS.md must be current (see ``tmt.agentsmd``).
+drift is always a warning, and so is a ``lang`` the battery cannot lint:
+the registry permits any lang, so a skipped syntax gate is disclosed
+rather than failed. One repo-level gate: a tmt marker block present in
+AGENTS.md must be current (see ``tmt.agentsmd``).
 """
 
 from __future__ import annotations
@@ -223,8 +225,10 @@ def stable_gate_failures(
     """The full gate battery one tool must pass to hold ``stage: stable``.
 
     Reuses the ``tmt check`` gates: the per-tool draft gates, the
-    undeclared-composition gate, and the stable gates. Origin-drift
-    warnings are not failures and are not included.
+    undeclared-composition gate, and the stable gates. Warnings — origin
+    drift, and a ``lang`` with no syntax gate — are not failures and are
+    not included: promotion runs exactly the failure battery, and
+    ``tmt check`` remains where the skipped gates are disclosed.
     """
     entry = {**registry.effective(tools[tool_id]), "stage": "stable"}
     tool = root / "tools" / tool_id
@@ -278,6 +282,7 @@ def _gate_one(
         paths.resolve_within(root, tool, label=f"tools/{tool_id}")
     except TmtError as error:
         return [f"{tool_id}: {error}"], warnings
+    warnings.extend(lang_warnings(tool_id, entry))
     try:
         failures.extend(_check_tool(tool_id, entry, tool))
         failures.extend(undeclared_composition(tool_id, entry, tool, tools))
@@ -351,34 +356,61 @@ def _tool_files(tools_dir: Path) -> set[str]:
     }
 
 
+def _lint_python(tool_id: str, tool: Path) -> list[str]:
+    try:
+        compile(_read_body(tool), os.fspath(tool), "exec")
+    except (SyntaxError, ValueError) as error:
+        return [f"{tool_id}: python syntax error: {error}"]
+    return []
+
+
+def _lint_sh(tool_id: str, tool: Path) -> list[str]:
+    try:
+        lint = _run(
+            ["sh", "-n", os.fspath(tool)], timeout=LINT_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        return [
+            f"{tool_id}: sh -n did not finish within "
+            f"{LINT_TIMEOUT_SECONDS}s"
+        ]
+    except OSError as error:
+        return [f"{tool_id}: sh -n could not run: {error}"]
+    if lint.returncode != 0:
+        detail = (lint.stderr.strip().splitlines() or ["sh -n failed"])[0]
+        return [f"{tool_id}: sh syntax error: {detail}"]
+    return []
+
+
+# The one source of truth for which langs get a syntax gate: the dispatch
+# table both runs the linters and names them in the skipped-gate warning.
+_LINTERS = {"python": _lint_python, "sh": _lint_sh}
+
+
+def lang_warnings(tool_id: str, entry: dict[str, Any]) -> list[str]:
+    """Disclose a ``lang`` the battery has no syntax gate for.
+
+    Never a failure: the registry permits any lang, so an escalated one
+    stays usable — but ``ok`` alone would overstate what was verified.
+    ``lang`` is repo-supplied, so ``repr`` keeps it on one printable line.
+    """
+    lang = entry["lang"]
+    if lang in _LINTERS:
+        return []
+    gated = ", ".join(sorted(_LINTERS))
+    return [
+        f"{tool_id}: lang {lang!r} has no syntax gate; the body was not "
+        f"linted (gated langs: {gated})"
+    ]
+
+
 def _check_tool(
     tool_id: str, entry: dict[str, Any], tool: Path
 ) -> list[str]:
     failures: list[str] = []
-    lang = entry["lang"]
-    if lang == "python":
-        try:
-            compile(_read_body(tool), os.fspath(tool), "exec")
-        except (SyntaxError, ValueError) as error:
-            failures.append(f"{tool_id}: python syntax error: {error}")
-    elif lang == "sh":
-        try:
-            lint = _run(
-                ["sh", "-n", os.fspath(tool)], timeout=LINT_TIMEOUT_SECONDS
-            )
-        except subprocess.TimeoutExpired:
-            failures.append(
-                f"{tool_id}: sh -n did not finish within "
-                f"{LINT_TIMEOUT_SECONDS}s"
-            )
-        except OSError as error:
-            failures.append(f"{tool_id}: sh -n could not run: {error}")
-        else:
-            if lint.returncode != 0:
-                detail = (
-                    lint.stderr.strip().splitlines() or ["sh -n failed"]
-                )[0]
-                failures.append(f"{tool_id}: sh syntax error: {detail}")
+    linter = _LINTERS.get(entry["lang"])
+    if linter is not None:
+        failures.extend(linter(tool_id, tool))
     if not os.access(tool, os.X_OK):
         failures.append(
             f"{tool_id}: executable bit not set on tools/{tool_id}"
@@ -519,7 +551,10 @@ def _origin_drift(
     origin = entry["origin"]
     if not isinstance(origin, dict):
         return []
-    source = Path(origin["repo"]) / "tools" / tool_id
+    # The source id, not the local one: a local rename must not silently
+    # end drift reporting by pointing at a path that never existed upstream.
+    source_id = origin.get("id") or tool_id
+    source = Path(origin["repo"]) / "tools" / source_id
     try:
         source_sha256 = sha256_file(source)
         local_sha256 = sha256_file(tool)

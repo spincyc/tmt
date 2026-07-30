@@ -118,6 +118,12 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "Source repository's origin remote URL, recorded when one was configured at copy time."
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9-]*$",
+                  "maxLength": 64,
+                  "description": "Tool id on the source side, recorded so a local rename does not sever drift detection; absent means the local id."
                 }
               }
             }

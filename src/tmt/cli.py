@@ -476,41 +476,43 @@ def _check(arguments: argparse.Namespace) -> int:
 
 def _stage(arguments: argparse.Namespace) -> int:
     root = registry.require_root()
-    data = registry.load(root)
-    tools = data["tools"]
-    entry = tools.get(arguments.id)
-    if entry is None:
-        raise TmtError(
-            "not-found", f"tool {arguments.id!r} is not registered in tmt.json"
-        )
-    previous = registry.effective(entry)["stage"]
-    target = arguments.stage
-    changed = previous != target
-    if changed and target == "stable":
-        failures = checks.stable_gate_failures(root, arguments.id, tools)
-        if failures:
+    # The stage read must share the critical section with the write, or a
+    # concurrent command's entry is read and then clobbered.
+    with registry.updating(root) as data:
+        tools = data["tools"]
+        entry = tools.get(arguments.id)
+        if entry is None:
             raise TmtError(
-                "check-failed",
-                f"cannot promote {arguments.id!r} to stable: "
-                + "; ".join(failures),
+                "not-found",
+                f"tool {arguments.id!r} is not registered in tmt.json",
             )
-    if changed and target == "draft":
-        dependents = sorted(
-            other
-            for other, raw in tools.items()
-            if other != arguments.id
-            and registry.effective(raw)["stage"] == "stable"
-            and arguments.id in registry.effective(raw)["requires"]
-        )
-        if dependents:
-            raise TmtError(
-                "check-failed",
-                f"cannot demote {arguments.id!r} to draft: required by "
-                f"stable {', '.join(dependents)}",
+        previous = registry.effective(entry)["stage"]
+        target = arguments.stage
+        changed = previous != target
+        if changed and target == "stable":
+            failures = checks.stable_gate_failures(root, arguments.id, tools)
+            if failures:
+                raise TmtError(
+                    "check-failed",
+                    f"cannot promote {arguments.id!r} to stable: "
+                    + "; ".join(failures),
+                )
+        if changed and target == "draft":
+            dependents = sorted(
+                other
+                for other, raw in tools.items()
+                if other != arguments.id
+                and registry.effective(raw)["stage"] == "stable"
+                and arguments.id in registry.effective(raw)["requires"]
             )
-    if changed:
-        entry["stage"] = target
-        registry.save(root, data)
+            if dependents:
+                raise TmtError(
+                    "check-failed",
+                    f"cannot demote {arguments.id!r} to draft: required by "
+                    f"stable {', '.join(dependents)}",
+                )
+        if changed:
+            entry["stage"] = target
     if arguments.json:
         _emit(
             {

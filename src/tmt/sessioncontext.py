@@ -18,7 +18,7 @@ TOOLS_HEADER = (
 )
 CANDIDATES_HEADER = "tmt: noted candidates (build at 2+ with tmt new)"
 MAX_LINES = 40
-MAX_LINE_CHARS = 120
+MAX_VALUE_CHARS = 120
 ELISION_SUFFIX = "more; read tmt.json)"
 
 HOOK_COMMAND = "tmt context"
@@ -33,14 +33,20 @@ GENERIC_HOOK_FRAGMENT = f"""\
 
 
 def _single_line(value: str) -> str:
-    """One printable line: repo-supplied text must not forge structure."""
+    """One printable line: repo-supplied text must not forge structure.
+
+    The cap applies per value, not to the composed line, and no public
+    path reaches it: the validator caps a purpose at 80 characters and an
+    id at 64, and a candidate slug passes the same id rule. It stays as
+    the backstop for a value that arrives some other way.
+    """
     collapsed = " ".join(value.split())
     safe = "".join(
         character if character.isprintable() else " "
         for character in collapsed
     )
-    if len(safe) > MAX_LINE_CHARS:
-        safe = safe[: MAX_LINE_CHARS - 1] + "…"
+    if len(safe) > MAX_VALUE_CHARS:
+        safe = safe[: MAX_VALUE_CHARS - 1] + "…"
     return safe
 
 

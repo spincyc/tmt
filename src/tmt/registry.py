@@ -6,8 +6,10 @@ The hand-rolled validator mirrors the normative document
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +37,7 @@ ENTRY_DEFAULTS: dict[str, Any] = {
 _ENTRY_REQUIRED = ("purpose", "stage", "usage")
 _ENTRY_KEYS = frozenset((*_ENTRY_REQUIRED, *ENTRY_DEFAULTS))
 _ORIGIN_KEYS = ("commit", "repo", "sha256")
-_ORIGIN_OPTIONAL_KEYS = ("url",)
+_ORIGIN_OPTIONAL_KEYS = ("id", "url")
 
 
 class TmtError(Exception):
@@ -211,6 +213,12 @@ def _validate_origin(prefix: str, origin: Any) -> list[str]:
             not isinstance(origin[key], str) or not origin[key]
         ):
             errors.append(f"{prefix}.origin.{key}: must be a nonempty string")
+    source_id = origin.get("id")
+    if source_id is not None and isinstance(source_id, str) and source_id:
+        if not valid_id(source_id):
+            errors.append(
+                f"{prefix}.origin.id: must be a tool id matching {ID_PATTERN}"
+            )
     sha256 = origin.get("sha256")
     if isinstance(sha256, str) and sha256 and not _SHA256_RE.fullmatch(sha256):
         errors.append(
@@ -268,6 +276,23 @@ def save(root: Path, data: dict[str, Any]) -> None:
     paths.write_atomic(
         path, json.dumps(data, indent=2, sort_keys=True) + "\n"
     )
+
+
+@contextlib.contextmanager
+def updating(root: Path) -> Iterator[dict[str, Any]]:
+    """Load, yield for mutation, and save under one lock.
+
+    Every registry command is a read-modify-write, so the load has to be
+    inside the critical section: serializing only the save would still
+    let a concurrent command's entry be read, then clobbered. A raising
+    body saves nothing, exactly as an early return did before.
+    """
+    from tmt import paths
+
+    with paths.locked(root):
+        data = load(root)
+        yield data
+        save(root, data)
 
 
 def effective(entry: dict[str, Any]) -> dict[str, Any]:

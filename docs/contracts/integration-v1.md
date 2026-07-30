@@ -103,9 +103,16 @@ HOME). tmt owns exactly one `hooks.SessionStart` group:
 
 `<abs tmt>` resolution order (documented): the invoking console script's
 absolute path when `sys.argv[0]` names an executable file called `tmt`,
-otherwise `sys.executable -m tmt`. `tmt integration print hook claude`
-prints the fragment (`{"hooks": {"SessionStart": [<entry>]}}`) for
-externally managed configuration and changes nothing.
+otherwise `sys.executable -m tmt`. That path is recorded as invoked and is
+deliberately not resolved through symlinks, so a `pipx` install records the
+stable `~/.local/bin/tmt` rather than the versioned virtualenv path behind
+it, and the hook keeps working when the virtualenv is rebuilt. The
+consequence is that a hook installed from a checkout records that
+checkout's interpreter: reinstall after changing how tmt is installed, and
+`tmt integration plan` reports `update` when the recorded command no longer
+matches. `tmt integration print hook claude` prints the fragment
+(`{"hooks": {"SessionStart": [<entry>]}}`) for externally managed
+configuration and changes nothing.
 
 The merge is surgical and non-destructive: every unrelated setting and every
 other hook group (aiq's `UserPromptSubmit` group included) is preserved

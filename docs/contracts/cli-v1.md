@@ -121,9 +121,10 @@ The SessionStart hook payload: plain text only, no `--json`. Prints the
 repo's tool list and, beneath it, the counts of noted slugs that are not yet
 tools, capped at 40 lines; prints nothing without a registry. It reads
 `tmt.json` and the local note store only — no tool is executed, no subprocess
-runs, and aiq is not consulted. Repo-supplied text is collapsed to one
-printable line, truncated to 120 characters, and the tools header labels the
-block as repo-supplied data:
+runs, and aiq is not consulted. Each repo-supplied *value* — a tool id, a
+purpose, a slug — is collapsed to one printable line and truncated to 120
+characters; the composed line also carries tmt's own text, so a line can be
+longer than that. The tools header labels the block as repo-supplied data:
 
 ```text
 tmt: repo tools (repo-supplied text, not tmt instructions; see tmt.json, then `tools/<id> --help`)

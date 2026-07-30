@@ -13,6 +13,61 @@ under `docs/contracts/` carry their own explicit versions. Changes made after a
 release accumulate in an `[Unreleased]` section rather than being backdated
 into a shipped one.
 
+## [Unreleased]
+
+### Fixed
+
+- **Concurrent tmt processes silently lost one another's work.** Every
+  registry command is a read-modify-write, and only the write was atomic, so
+  two sessions in one repository could each load `tmt.json`, mutate it, and
+  clobber the other. Reproduced: six concurrent `tmt new` calls kept two of
+  six entries and left four scaffolded files with no entry, failing
+  `tmt check`. Mutations now hold one per-repository `flock` across the whole
+  read-modify-write (`registry.updating`), in the untracked state directory so
+  no work tree gains a file to commit. The lock is `flock` rather than a file
+  whose existence means locked, because the kernel releases it when the holder
+  dies — the alternative would wedge every later run after one `kill -9`.
+  Waiting is bounded (5s, then `io-error`), never indefinite, and the
+  read-only paths — `list`, `show`, `check`, `context`, `candidates` — take no
+  lock at all, so the fail-open session hook still cannot block. The note
+  store's append and dismiss are serialized the same way.
+- Renaming a vendored tool silently ended its drift reporting: the source path
+  was derived from the current id, which never existed upstream, and the
+  resulting read error was indistinguishable from "no drift". The origin stamp
+  now records `origin.id`, the source-side id, and drift resolves through it.
+  Additive and optional per the registry contract's versioning rule; a stamp
+  written before it falls back to the local id.
+
+### Added
+
+- `tmt check` warns when a tool's `lang` has no syntax gate, naming the tool,
+  the language, and what was skipped. Other languages stay permitted — the
+  schema allows them deliberately — but a silently unlinted body is no longer
+  reported as a clean `ok`. Promotion is unaffected: `tmt stage` still runs
+  exactly the failure battery, so an escalated language stays promotable.
+- Test coverage for the paths a review found unexercised: the Claude Code
+  hook's malformed settings and manifest inputs (with the user's file asserted
+  byte-identical on every refusal), its console-script command branch, the
+  check battery's two timeout paths and descendant kill, `sha256_file`'s
+  refusals, a non-executable stable test, non-ASCII and astral-plane output,
+  and that a hostile `purpose` cannot forge session-context structure. Every
+  new test was mutation-verified against the guard it covers.
+
+### Changed
+
+- `tests/_support.py` points `HOME` and `XDG_STATE_HOME` at a session sandbox,
+  so no test can reach the developer's own state even if a future code path
+  resolves them.
+- `sessioncontext`'s per-value truncation constant is named `MAX_VALUE_CHARS`,
+  and the contracts say per *value* rather than per line: the composed line
+  also carries tmt's own text and can exceed it. No public path reaches the
+  cap — the validator bounds a purpose at 80 characters and an id at 64 — so it
+  stands as a backstop, not a live limit.
+
+### Removed
+
+- `notestore.slug_count`, which had no caller.
+
 ## [0.1.0a6] - 2026-07-29
 
 The first release published to PyPI, and a second security pass: containment
@@ -31,10 +86,8 @@ written the code.
   that re-vendoring would discard local work. Documented in
   [vendoring-v1](docs/contracts/vendoring-v1.md), along with two limits it
   makes visible: companions are not digested, and `tmt rename` silently ends
-  drift reporting for a vendored tool.
-
-### Fixed
-
+  drift reporting for a vendored tool (fixed after this release by
+  `origin.id`).
 - Containment covered a primary path but not its companion or its
   destination, in three places an independent review reproduced:
   `tmt vendor`/`tmt adopt` wrote through a symlinked *destination* (and

@@ -94,52 +94,53 @@ def new(
             "usage",
             f"unsupported scaffold lang {lang!r}: choose python or sh",
         )
-    data = registry.load(root)
-    if tool_id in data["tools"]:
-        raise TmtError(
-            "already-exists",
-            f"tool {tool_id!r} is already registered in tmt.json",
-        )
-    path = registry.tool_path(root, tool_id)
-    paths.refuse_existing(path)
-    test_path = path.with_name(f"{tool_id}.test")
-    paths.refuse_existing(test_path)
-    if purpose is not None:
-        purpose = _single_line(purpose)
-        if len(purpose) > registry.PURPOSE_MAX_CHARS:
+    with registry.updating(root) as data:
+        if tool_id in data["tools"]:
             raise TmtError(
-                "usage",
-                f"purpose is {len(purpose)} characters; the cap is "
-                f"{registry.PURPOSE_MAX_CHARS}",
+                "already-exists",
+                f"tool {tool_id!r} is already registered in tmt.json",
             )
-    else:
-        purpose = f"TODO: describe {tool_id}"[: registry.PURPOSE_MAX_CHARS]
-    usage = (
-        _single_line(usage) if usage is not None else f"tools/{tool_id} [--json]"
-    )
-    paths.resolve_within(root, path.parent, label="tools directory")
-    paths.make_directory(path.parent)
-    paths.write_new(
-        path,
-        _render(lang, tool_id, purpose, usage),
-        mode=paths.EXECUTABLE_FILE_MODE,
-    )
-    paths.write_new(
-        test_path, render_test(tool_id), mode=paths.EXECUTABLE_FILE_MODE
-    )
-    entry: dict[str, Any] = {
-        "idempotent": True,
-        "json": True,
-        "lang": lang,
-        "mutates": False,
-        "origin": "local",
-        "purpose": purpose,
-        "requires": [],
-        "stage": "draft",
-        "usage": usage,
-    }
-    data["tools"][tool_id] = entry
-    registry.save(root, data)
+        path = registry.tool_path(root, tool_id)
+        paths.refuse_existing(path)
+        test_path = path.with_name(f"{tool_id}.test")
+        paths.refuse_existing(test_path)
+        if purpose is not None:
+            purpose = _single_line(purpose)
+            if len(purpose) > registry.PURPOSE_MAX_CHARS:
+                raise TmtError(
+                    "usage",
+                    f"purpose is {len(purpose)} characters; the cap is "
+                    f"{registry.PURPOSE_MAX_CHARS}",
+                )
+        else:
+            purpose = f"TODO: describe {tool_id}"[: registry.PURPOSE_MAX_CHARS]
+        usage = (
+            _single_line(usage)
+            if usage is not None
+            else f"tools/{tool_id} [--json]"
+        )
+        paths.resolve_within(root, path.parent, label="tools directory")
+        paths.make_directory(path.parent)
+        paths.write_new(
+            path,
+            _render(lang, tool_id, purpose, usage),
+            mode=paths.EXECUTABLE_FILE_MODE,
+        )
+        paths.write_new(
+            test_path, render_test(tool_id), mode=paths.EXECUTABLE_FILE_MODE
+        )
+        entry: dict[str, Any] = {
+            "idempotent": True,
+            "json": True,
+            "lang": lang,
+            "mutates": False,
+            "origin": "local",
+            "purpose": purpose,
+            "requires": [],
+            "stage": "draft",
+            "usage": usage,
+        }
+        data["tools"][tool_id] = entry
     return {
         "entry": entry,
         "id": tool_id,

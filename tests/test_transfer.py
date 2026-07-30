@@ -55,7 +55,7 @@ class VendorTest(TmtTestCase):
         origin = payload["origin"]
         # No origin remote in the source, so no url field is stamped.
         self.assertEqual(
-            sorted(origin), ["commit", "repo", "sha256"]
+            sorted(origin), ["commit", "id", "repo", "sha256"]
         )
         self.assertEqual(origin["repo"], os.fspath(source))
         self.assertEqual(origin["commit"], commit)
@@ -148,6 +148,46 @@ class VendorTest(TmtTestCase):
         self.assertIn("both this copy and", warnings[0])
         self.assertIn("discard the local changes", warnings[0])
 
+    def test_origin_records_the_source_side_id(self) -> None:
+        source, _ = self._source_with_stable_tool("greet")
+        dest = self.make_repo()
+        payload = self.assert_json_success(
+            run_tmt(dest, "vendor", os.fspath(source), "greet", "--json")
+        )
+        self.assertEqual(payload["origin"]["id"], "greet")
+
+    def test_renaming_a_vendored_tool_keeps_its_drift_reporting(self) -> None:
+        """Drift derives the source path from the id it was vendored under.
+
+        Deriving it from the current id meant a local rename pointed at a
+        path that never existed upstream, and drift went silent.
+        """
+        source, _ = self._source_with_stable_tool("greet")
+        dest = self.make_repo()
+        run_tmt(dest, "vendor", os.fspath(source), "greet", "--json")
+        source_tool = source / "tools" / "greet"
+        source_tool.write_text(
+            source_tool.read_text(encoding="utf-8") + "# upstream\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            len(self.check_json(dest)[2]), 1, "expected drift before rename"
+        )
+
+        renamed = run_tmt(dest, "rename", "greet", "hello", "--json")
+        self.assertEqual(renamed.returncode, 0, renamed.stderr)
+        test = dest / "tools" / "hello.test"
+        test.write_text(
+            PASSING_TEST.format(tool_id="hello"), encoding="utf-8"
+        )
+        test.chmod(0o755)
+
+        returncode, failures, warnings = self.check_json(dest)
+        self.assertEqual((returncode, failures), (0, []))
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("hello", warnings[0])
+        self.assertIn("has a newer version", warnings[0])
+
     def test_vendor_stamps_url_when_source_has_origin_remote(self) -> None:
         source, _ = self._source_with_stable_tool("greet")
         run_git(
@@ -165,7 +205,7 @@ class VendorTest(TmtTestCase):
 
         origin = payload["origin"]
         self.assertEqual(
-            sorted(origin), ["commit", "repo", "sha256", "url"]
+            sorted(origin), ["commit", "id", "repo", "sha256", "url"]
         )
         self.assertEqual(
             origin["url"], "https://example.invalid/tmt-lib.git"

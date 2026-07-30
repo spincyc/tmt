@@ -187,6 +187,41 @@ class StageDemoteTest(TmtTestCase):
             load_registry(root)["tools"]["loner"]["stage"], "draft"
         )
 
+    def test_demotion_human_output_reports_the_transition(self) -> None:
+        root = self.make_repo()
+        self._stable(root, "loner")
+
+        result = run_tmt(root, "stage", "loner", "draft")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "loner: stable -> draft\n")
+
+    def test_demotion_refusal_human_output_names_the_dependent(self) -> None:
+        """Without --json the refusal is plain text on stderr only."""
+        root = self.make_repo()
+        self._stable(root, "helper")
+        run_tmt(root, "new", "top", "--lang", "sh")
+        write_executable(
+            root / "tools" / "top.test", PASSING_TEST.format(tool_id="top")
+        )
+        data = load_registry(root)
+        data["tools"]["top"]["requires"] = ["helper"]
+        save_registry(root, data)
+        promoted = run_tmt(root, "stage", "top", "stable")
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+
+        result = run_tmt(root, "stage", "helper", "draft")
+
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "tmt: cannot demote 'helper' to draft: required by stable top\n",
+        )
+        self.assertEqual(
+            load_registry(root)["tools"]["helper"]["stage"], "stable"
+        )
+
 
 class StageNoOpAndErrorsTest(TmtTestCase):
     def test_no_op_at_requested_stage_succeeds_and_says_so(self) -> None:

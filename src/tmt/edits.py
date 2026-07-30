@@ -57,27 +57,29 @@ def remove(
     root: Path, tool_id: str, *, keep_files: bool = False
 ) -> dict[str, Any]:
     """Delete a tool's entry and, unless ``keep_files``, its files."""
-    data = registry.load(root)
-    _entry_or_error(data, tool_id)
-    dependents = _dependents(data["tools"], tool_id)
-    if dependents:
-        raise TmtError(
-            "check-failed",
-            f"cannot remove {tool_id!r}: required by "
-            f"{', '.join(dependents)}; update or remove them first",
-        )
     doomed: list[Path] = []
-    if not keep_files:
-        # Containing the directory is the whole rule: unlink never follows
-        # a symlink, so a companion pointing out of the repo is still the
-        # repo's own link to delete — refusing it would make the tool
-        # unremovable. Collect first so a failure cannot half-delete.
-        paths.resolve_within(root, root / "tools", label="tools directory")
-        doomed = _tool_files(root, tool_id)
-    for path in doomed:
-        paths.unlink(path)
-    del data["tools"][tool_id]
-    registry.save(root, data)
+    with registry.updating(root) as data:
+        _entry_or_error(data, tool_id)
+        dependents = _dependents(data["tools"], tool_id)
+        if dependents:
+            raise TmtError(
+                "check-failed",
+                f"cannot remove {tool_id!r}: required by "
+                f"{', '.join(dependents)}; update or remove them first",
+            )
+        if not keep_files:
+            # Containing the directory is the whole rule: unlink never
+            # follows a symlink, so a companion pointing out of the repo
+            # is still the repo's own link to delete — refusing it would
+            # make the tool unremovable. Collect first so a failure
+            # cannot half-delete.
+            paths.resolve_within(
+                root, root / "tools", label="tools directory"
+            )
+            doomed = _tool_files(root, tool_id)
+        for path in doomed:
+            paths.unlink(path)
+        del data["tools"][tool_id]
     return {
         "id": tool_id,
         "removed_files": sorted(path.name for path in doomed),
@@ -110,38 +112,38 @@ def rename(root: Path, tool_id: str, new_id: str) -> dict[str, Any]:
         )
     if new_id == tool_id:
         raise TmtError("usage", f"{tool_id!r} is already the id")
-    data = registry.load(root)
-    entry = _entry_or_error(data, tool_id)
-    if new_id in data["tools"]:
-        raise TmtError(
-            "already-exists",
-            f"tool {new_id!r} is already registered in tmt.json",
-        )
-    # Plan every move before making one: a refusal on the companion must
-    # not leave the executable already renamed, which would leave the
-    # repository in a state `tmt check` rejects.
-    # rename never follows a symlink either, so as with remove the rule is
-    # that the directory is contained; the link itself is the repo's to move.
-    paths.resolve_within(root, root / "tools", label="tools directory")
-    planned: list[tuple[Path, Path]] = []
-    for path in _tool_files(root, tool_id):
-        target = path.with_name(new_id + path.name[len(tool_id):])
-        paths.refuse_existing(target)
-        planned.append((path, target))
-    moved = _apply_moves(planned)
-    tools = data["tools"]
-    del tools[tool_id]
-    tools[new_id] = entry
-    updated: list[str] = []
-    for other, raw in tools.items():
-        requires = raw.get("requires")
-        if isinstance(requires, list) and tool_id in requires:
-            raw["requires"] = [
-                new_id if dependency == tool_id else dependency
-                for dependency in requires
-            ]
-            updated.append(other)
-    registry.save(root, data)
+    with registry.updating(root) as data:
+        entry = _entry_or_error(data, tool_id)
+        if new_id in data["tools"]:
+            raise TmtError(
+                "already-exists",
+                f"tool {new_id!r} is already registered in tmt.json",
+            )
+        # Plan every move before making one: a refusal on the companion must
+        # not leave the executable already renamed, which would leave the
+        # repository in a state `tmt check` rejects.
+        # rename never follows a symlink either, so as with remove the
+        # rule is that the directory is contained; the link itself is the
+        # repo's to move.
+        paths.resolve_within(root, root / "tools", label="tools directory")
+        planned: list[tuple[Path, Path]] = []
+        for path in _tool_files(root, tool_id):
+            target = path.with_name(new_id + path.name[len(tool_id):])
+            paths.refuse_existing(target)
+            planned.append((path, target))
+        moved = _apply_moves(planned)
+        tools = data["tools"]
+        del tools[tool_id]
+        tools[new_id] = entry
+        updated: list[str] = []
+        for other, raw in tools.items():
+            requires = raw.get("requires")
+            if isinstance(requires, list) and tool_id in requires:
+                raw["requires"] = [
+                    new_id if dependency == tool_id else dependency
+                    for dependency in requires
+                ]
+                updated.append(other)
     return {
         "id": new_id,
         "moved_files": sorted(moved),
@@ -247,30 +249,31 @@ def set_field(
             f"unknown field {field!r}: choose one of "
             f"{', '.join(SETTABLE_FIELDS)}",
         )
-    data = registry.load(root)
-    entry = _entry_or_error(data, tool_id)
-    value = _parse_value(field, raw)
-    previous = registry.effective(entry).get(field)
-    entry[field] = value
-    errors = registry.validate(data)
-    if errors:
-        raise TmtError("check-failed", f"rejected: {errors[0]}")
-    if field == "requires":
-        missing = [
-            dependency
-            for dependency in value
-            if dependency not in data["tools"]
-        ]
-        if missing:
-            raise TmtError(
-                "check-failed",
-                f"rejected: requires {', '.join(sorted(missing))} which "
-                "is not registered",
-            )
-        gate_failures = _requires_failures(data["tools"], tool_id)
-        if gate_failures:
-            raise TmtError("check-failed", f"rejected: {gate_failures[0]}")
-    registry.save(root, data)
+    with registry.updating(root) as data:
+        entry = _entry_or_error(data, tool_id)
+        value = _parse_value(field, raw)
+        previous = registry.effective(entry).get(field)
+        entry[field] = value
+        errors = registry.validate(data)
+        if errors:
+            raise TmtError("check-failed", f"rejected: {errors[0]}")
+        if field == "requires":
+            missing = [
+                dependency
+                for dependency in value
+                if dependency not in data["tools"]
+            ]
+            if missing:
+                raise TmtError(
+                    "check-failed",
+                    f"rejected: requires {', '.join(sorted(missing))} "
+                    "which is not registered",
+                )
+            gate_failures = _requires_failures(data["tools"], tool_id)
+            if gate_failures:
+                raise TmtError(
+                    "check-failed", f"rejected: {gate_failures[0]}"
+                )
     return {
         "field": field,
         "id": tool_id,

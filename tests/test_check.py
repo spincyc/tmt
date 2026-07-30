@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import sys
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from _support import (
+    SRC_DIR,
     TmtTestCase,
     load_registry,
     run_tmt,
@@ -14,7 +19,16 @@ from _support import (
     write_executable,
 )
 
+# The only module that also drives the battery in process (see
+# BatteryInternalsTest), so src/ has to be importable however the suite was
+# launched, not only through the PYTHONPATH the Makefile sets.
+if os.fspath(SRC_DIR) not in sys.path:
+    sys.path.insert(0, os.fspath(SRC_DIR))
+
+from tmt import checks  # noqa: E402
+
 PASSING_TEST = "#!/bin/sh\nset -eu\n\"tools/{tool_id}\" --help >/dev/null\n"
+HANGING = "#!/bin/sh\nsleep 30\n"
 
 
 class ScaffoldCheckTest(TmtTestCase):
@@ -207,6 +221,91 @@ class DraftGateTest(TmtTestCase):
         )
 
 
+class UngatedLangTest(TmtTestCase):
+    """A lang no linter covers is disclosed as a warning, never a failure."""
+
+    def _sh_tool_declaring(self, root: Path, tool_id: str, lang: str) -> None:
+        """A working sh tool whose registry entry claims ``lang``."""
+        self.assertEqual(
+            run_tmt(root, "new", tool_id, "--lang", "sh").returncode, 0
+        )
+        data = load_registry(root)
+        data["tools"][tool_id]["lang"] = lang
+        save_registry(root, data)
+
+    def test_unlintable_lang_warns_and_still_exits_zero(self) -> None:
+        root = self.make_repo()
+        self._sh_tool_declaring(root, "ferrous", "rust")
+
+        returncode, failures, warnings = self.check_json(root)
+
+        self.assertEqual((returncode, failures), (0, []))
+        self.assertEqual(
+            warnings,
+            [
+                "ferrous: lang 'rust' has no syntax gate; the body was "
+                "not linted (gated langs: python, sh)"
+            ],
+        )
+
+    def test_lang_typo_warns_rather_than_silently_skipping(self) -> None:
+        root = self.make_repo()
+        self._sh_tool_declaring(root, "typo", "PYTHON")
+
+        result = run_tmt(root, "check")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "WARN typo: lang 'PYTHON' has no syntax gate; the body was "
+            "not linted (gated langs: python, sh)\nok\n",
+        )
+
+    def test_control_characters_in_lang_are_escaped(self) -> None:
+        root = self.make_repo()
+        # A registry is repo-supplied: no lang reaches a terminal as a
+        # live escape sequence.
+        self._sh_tool_declaring(root, "sneaky", "ru\u009bst")
+
+        returncode, failures, warnings = self.check_json(root)
+
+        self.assertEqual((returncode, failures), (0, []))
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertNotIn("\u009b", warnings[0])
+        self.assertIn("'ru\\x9bst'", warnings[0])
+
+    def test_scoped_check_warns_only_about_the_named_tool(self) -> None:
+        root = self.make_repo()
+        self._sh_tool_declaring(root, "ferrous", "rust")
+        self.assertEqual(run_tmt(root, "new", "plain").returncode, 0)
+
+        scoped = self.assert_json_success(
+            run_tmt(root, "check", "ferrous", "--json")
+        )
+        self.assertEqual(len(scoped["warnings"]), 1, scoped)
+        self.assertIn("lang 'rust'", scoped["warnings"][0])
+
+        python_tool = self.assert_json_success(
+            run_tmt(root, "check", "plain", "--json")
+        )
+        self.assertEqual(python_tool["warnings"], [])
+
+    def test_promotion_battery_ignores_the_warning(self) -> None:
+        root = self.make_repo()
+        self._sh_tool_declaring(root, "ferrous", "rust")
+        write_executable(
+            root / "tools" / "ferrous.test",
+            PASSING_TEST.format(tool_id="ferrous"),
+        )
+
+        result = run_tmt(root, "stage", "ferrous", "stable")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            load_registry(root)["tools"]["ferrous"]["stage"], "stable"
+        )
+
+
 class StableGateTest(TmtTestCase):
     def _make_stable(self, root, tool_id: str, *, with_test: bool = True):
         run_tmt(root, "new", tool_id, "--lang", "sh")
@@ -257,6 +356,19 @@ class StableGateTest(TmtTestCase):
                 "hollow: tools/hollow.test is the unmodified scaffold; "
                 "write real assertions before promoting"
             ],
+        )
+
+    def test_stable_test_without_the_executable_bit(self) -> None:
+        root = self.make_repo()
+        self._make_stable(root, "unarmed")
+        (root / "tools" / "unarmed.test").chmod(0o644)
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            failures,
+            ["unarmed: executable bit not set on tools/unarmed.test"],
         )
 
     def test_stable_failing_test(self) -> None:
@@ -428,6 +540,25 @@ class CompositionGateTest(TmtTestCase):
                 "it in requires"
             ],
         )
+
+    def test_undecodable_body_is_skipped_not_a_crash(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "caller", "--lang", "sh")
+        run_tmt(root, "new", "callee", "--lang", "sh")
+        tool = root / "tools" / "caller"
+        # The same sibling reference in a decodable body is a failure
+        # (test_undeclared_sibling_use_fails_for_drafts); undecodable, the
+        # gate has nothing to scan and the battery must still finish.
+        tool.write_bytes(
+            tool.read_bytes() + b'test "$0" = callee || : "\xff\xfe"\n'
+        )
+
+        result = run_tmt(root, "check", "--json")
+        payload = self.parse_single_json(result.stdout)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(payload["failures"], [])
 
     def test_id_embedded_in_longer_identifier_does_not_match(self) -> None:
         root = self.make_repo()
@@ -646,6 +777,95 @@ class HumanOutputTest(TmtTestCase):
         self.assertEqual(len(lines), 2)
         for line in lines:
             self.assertTrue(line.startswith("FAIL "), line)
+
+
+class BatteryInternalsTest(TmtTestCase):
+    """Gates no subprocess run can reach cheaply or observably.
+
+    The battery is called in process here so a deadline constant can be
+    shortened: through the CLI these paths cost the real 5s and 60s. The
+    ``sha256_file`` refusals are unobservable from outside as well, because
+    ``_origin_drift`` turns every OSError into "no drift".
+    """
+
+    def test_help_timeout_is_a_failure(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "hang", "--lang", "sh")
+        tool = root / "tools" / "hang"
+        write_executable(tool, HANGING)
+
+        with mock.patch.object(checks, "HELP_TIMEOUT_SECONDS", 1):
+            ok, detail = checks.capture_help(tool)
+
+        self.assertFalse(ok)
+        self.assertEqual(detail, "--help did not finish within 1s")
+
+    def test_timed_out_tool_loses_its_descendants(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "spawner", "--lang", "sh")
+        marker = root / "descendant.marker"
+        # The background child rewrites the marker forever, so deleting it
+        # after the timeout and finding it still gone proves the whole
+        # process group died rather than only the tool itself.
+        write_executable(
+            root / "tools" / "spawner",
+            "#!/bin/sh\n"
+            f'while : ; do : > "{marker}"; sleep 0.05; done &\n'
+            "sleep 30\n",
+        )
+
+        with mock.patch.object(checks, "HELP_TIMEOUT_SECONDS", 1):
+            ok, _ = checks.capture_help(root / "tools" / "spawner")
+
+        self.assertFalse(ok)
+        self.assertTrue(marker.exists(), "the descendant never started")
+        marker.unlink()
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            self.assertFalse(
+                marker.exists(), "an orphaned descendant kept running"
+            )
+            time.sleep(0.05)
+
+    def test_stable_test_timeout_is_a_failure(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "slow", "--lang", "sh")
+        write_executable(root / "tools" / "slow.test", HANGING)
+        data = load_registry(root)
+        data["tools"]["slow"]["stage"] = "stable"
+        save_registry(root, data)
+
+        with mock.patch.object(checks, "TEST_TIMEOUT_SECONDS", 1):
+            failures, warnings = checks.run_checks(root)
+
+        self.assertEqual(
+            failures, ["slow: tools/slow.test did not finish within 1s"]
+        )
+        self.assertEqual(warnings, [])
+
+    def test_sha256_refuses_a_non_regular_file(self) -> None:
+        directory = self.make_dir()
+
+        with self.assertRaises(OSError) as caught:
+            checks.sha256_file(directory)
+
+        self.assertIn("is not a regular file", str(caught.exception))
+
+    def test_sha256_refuses_a_file_past_the_cap(self) -> None:
+        oversized = self.make_dir() / "big"
+        body = b"x" * 4096
+        oversized.write_bytes(body)
+        # The same file under the real cap hashes normally: the shortened
+        # cap is what the refusal turns on, not the file itself.
+        self.assertEqual(
+            checks.sha256_file(oversized), hashlib.sha256(body).hexdigest()
+        )
+
+        with mock.patch.object(checks, "SHA256_MAX_BYTES", 1024):
+            with self.assertRaises(OSError) as caught:
+                checks.sha256_file(oversized)
+
+        self.assertIn("exceeds the 1024-byte hash cap", str(caught.exception))
 
 
 if __name__ == "__main__":

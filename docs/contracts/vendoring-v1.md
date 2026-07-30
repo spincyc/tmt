@@ -50,6 +50,7 @@ without them the copy fails at runtime.
 | `commit` | `git rev-parse HEAD` in the source, or `"unknown"` when Git or the repo is unavailable |
 | `sha256` | SHA-256 of the copied executable (companions are not digested) |
 | `url` | `git remote get-url origin` in the source; omitted when no `origin` remote is configured |
+| `id` | The tool's id on the source side. Drift resolves `<repo>/tools/<id>` through this, so a local `tmt rename` keeps reporting drift; absent (older stamps) means the local id |
 
 Tools born in place keep `origin: "local"`. The stamp records where a copy
 came from; it grants nothing and is never consulted at runtime.
@@ -123,9 +124,10 @@ an upstream change confined to `tools/<id>.test` is invisible here. The
 remedies stay symmetric and deliberate: re-vendor to take the source's
 version, or keep the fork.
 
-`tmt rename` does not rewrite `origin`, and the source path is derived from
-the tool's id, so renaming a vendored tool silently ends drift reporting for
-it.
+`tmt rename` does not rewrite `origin`, and it does not need to: the source
+path resolves through `origin.id`, so a renamed vendored tool keeps its drift
+reporting. A stamp written before `origin.id` existed falls back to the local
+id and loses drift on rename — re-vendor to refresh it.
 
 Tools about tool-making graduate one step further — into tmt itself — by
 ordinary pull request, not by vendoring. See

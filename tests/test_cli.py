@@ -5,8 +5,17 @@ from __future__ import annotations
 import os
 import subprocess
 import unittest
+from pathlib import Path
 
 from _support import TmtTestCase, load_registry, run_tmt, save_registry
+
+# Repo-supplied text tmt must carry through unchanged: an accent, a CJK
+# pair, and an astral emoji, well inside the 80-character purpose cap.
+UNICODE_PURPOSE = "Résumé du café ☕ 中文 😀"
+# U+E0002 is a TAG character: astral and not printable, so human output
+# must escape it — with eight hex digits, never a malformed five.
+TAG_CHARACTER = "\U000e0002"
+EMOJI = "\U0001f600"
 
 
 class InitTest(TmtTestCase):
@@ -258,6 +267,58 @@ class ShowTest(TmtTestCase):
             "config\t.doc-budgets.json,docs/budgets.toml\n", human.stdout
         )
 
+    def test_show_escapes_control_characters_from_the_long_doc(self) -> None:
+        """tools/<id>.md is repo-supplied text, like the captured --help.
+
+        Human output escapes its control characters so a doc cannot
+        repaint the terminal; `--json` escapes them structurally instead,
+        so the payload still carries the document verbatim.
+        """
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        doc = "docstart\x1b]0;pwned\x07docend\n"
+        (root / "tools" / "alpha.md").write_text(doc, encoding="utf-8")
+
+        human = run_tmt(root, "show", "alpha")
+
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertNotIn("\x1b", human.stdout)
+        self.assertNotIn("\x07", human.stdout)
+        self.assertIn(
+            "docstart\\u001b]0;pwned\\u0007docend\n", human.stdout
+        )
+
+        machine = run_tmt(root, "show", "alpha", "--json")
+
+        payload = self.assert_json_success(machine)
+        self.assertEqual(payload["doc"], doc)
+        self.assertNotIn("\x1b", machine.stdout)
+        self.assertIn("\\u001b", machine.stdout)
+
+    def test_show_human_renders_a_vendored_origin_as_repo_at_commit(
+        self,
+    ) -> None:
+        """`tmt vendor` stamps origin as an object; human output folds it."""
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "vend").returncode, 0)
+        origin = {
+            "commit": "a" * 40,
+            "repo": "/srv/tmt-lib",
+            "sha256": "b" * 64,
+        }
+        data = load_registry(root)
+        data["tools"]["vend"]["origin"] = origin
+        save_registry(root, data)
+
+        human = run_tmt(root, "show", "vend")
+
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertIn(f"origin\t/srv/tmt-lib@{'a' * 40}\n", human.stdout)
+        payload = self.assert_json_success(
+            run_tmt(root, "show", "vend", "--json")
+        )
+        self.assertEqual(payload["entry"]["origin"], origin)
+
     def test_show_reports_a_non_utf8_doc_as_a_content_failure(self) -> None:
         """A companion doc's bytes are the repo's, not a tmt defect.
 
@@ -319,6 +380,104 @@ class ShowTest(TmtTestCase):
         self.assertEqual(human.returncode, 3)
         self.assertEqual(human.stdout, "")
         self.assertTrue(human.stderr.startswith("tmt: "), human.stderr)
+
+
+class NonAsciiOutputTest(TmtTestCase):
+    """cli-v1 JSON is UTF-8: non-ASCII text is never \\uXXXX-escaped."""
+
+    def setUp(self) -> None:
+        self.root = self.make_repo()
+        result = run_tmt(
+            self.root, "new", "greet", "--purpose", UNICODE_PURPOSE
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_list_json_carries_non_ascii_literally(self) -> None:
+        result = run_tmt(self.root, "list", "--json")
+
+        payload = self.assert_json_success(result)
+        self.assertEqual(
+            payload["tools"],
+            [{"id": "greet", "purpose": UNICODE_PURPOSE, "stage": "draft"}],
+        )
+        self.assertIn(UNICODE_PURPOSE, result.stdout)
+        self.assertNotIn("\\u", result.stdout)
+
+    def test_show_json_carries_non_ascii_literally(self) -> None:
+        result = run_tmt(self.root, "show", "greet", "--json")
+
+        payload = self.assert_json_success(result)
+        self.assertEqual(payload["entry"]["purpose"], UNICODE_PURPOSE)
+        self.assertIn(f'"purpose":"{UNICODE_PURPOSE}"', result.stdout)
+        self.assertNotIn("\\u00", result.stdout)
+
+    def test_check_json_carries_non_ascii_failure_text_literally(
+        self,
+    ) -> None:
+        """check echoes no purpose, so an invalid key is the only route."""
+        data = load_registry(self.root)
+        data["clé ☕"] = 1
+        save_registry(self.root, data)
+
+        result = run_tmt(self.root, "check", "--json")
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        payload = self.parse_single_json(result.stdout)
+        self.assertEqual(len(payload["failures"]), 1, payload["failures"])
+        failure = payload["failures"][0]
+        self.assertTrue(failure.startswith("registry: "), failure)
+        self.assertIn("clé ☕", failure)
+        self.assertNotIn("\\u", result.stdout)
+
+    def test_human_output_carries_non_ascii_literally(self) -> None:
+        listed = run_tmt(self.root, "list")
+        shown = run_tmt(self.root, "show", "greet")
+
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(listed.stdout, f"greet\tdraft\t{UNICODE_PURPOSE}\n")
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn(f"purpose\t{UNICODE_PURPOSE}\n", shown.stdout)
+        self.assertNotIn("\\u", shown.stdout)
+
+
+class AstralEscapeTest(TmtTestCase):
+    """Human output escapes unprintable characters, not printable ones."""
+
+    def _repo_with_purpose(self, purpose: str) -> Path:
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        data = load_registry(root)
+        data["tools"]["alpha"]["purpose"] = purpose
+        save_registry(root, data)
+        return root
+
+    def test_unprintable_astral_character_escapes_as_eight_hex_digits(
+        self,
+    ) -> None:
+        root = self._repo_with_purpose(f"tag{TAG_CHARACTER}end")
+
+        shown = run_tmt(root, "show", "alpha")
+        listed = run_tmt(root, "list")
+
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn("purpose\ttag\\U000e0002end\n", shown.stdout)
+        self.assertEqual(listed.stdout, "alpha\tdraft\ttag\\U000e0002end\n")
+        for output in (shown.stdout, listed.stdout):
+            self.assertNotIn(TAG_CHARACTER, output)
+            # A five-hex escape was the previous bug: a reader
+            # takes it as U+E000 followed by a literal "2".
+            self.assertNotIn("\\ue0002", output)
+
+    def test_printable_astral_character_is_passed_through(self) -> None:
+        root = self._repo_with_purpose(f"smile{EMOJI}")
+
+        shown = run_tmt(root, "show", "alpha")
+        listed = run_tmt(root, "list")
+
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn(f"purpose\tsmile{EMOJI}\n", shown.stdout)
+        self.assertEqual(listed.stdout, f"alpha\tdraft\tsmile{EMOJI}\n")
+        self.assertNotIn("\\U0001f600", shown.stdout)
 
 
 class ProtocolTest(TmtTestCase):

@@ -87,7 +87,7 @@ collected and reported, never just the first.
 | `tools/<id>` resolves inside the repository root — a symlink out of the repo is refused, never followed | all | check + every write path |
 | Every entry has its file; every file has its entry (parity both directions) | all | check |
 | `purpose` at most 80 characters — it is the per-session discovery cost | all | validator |
-| Source lints: Python must compile; sh passes `sh -n`; other langs skipped | all | check |
+| Source lints: Python must compile; sh passes `sh -n`; another `lang` is skipped and the skip is reported as a warning | all | check |
 | Executable bit set on `tools/<id>` | all | check |
 | `tools/<id> --help` exits 0 within 5 seconds | all | check |
 | Every `requires` id resolves; no duplicate ids; no dependency cycles | all | validator + check |

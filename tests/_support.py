@@ -1,8 +1,15 @@
 """Shared helpers for the tmt test suite.
 
-Every test drives the CLI as a subprocess: ``[sys.executable, "-m", "tmt"]``
-with PYTHONPATH pointing at ``src/``, asserting on exact JSON fields, exit
-codes, and stderr error codes (aiq cli-v1 protocol).
+Tests drive the CLI as a subprocess: ``[sys.executable, "-m", "tmt"]`` with
+PYTHONPATH pointing at ``src/``, asserting on exact JSON fields, exit codes,
+and stderr error codes (aiq cli-v1 protocol). A few gates are unobservable
+from outside — a refusal the CLI converts to "no drift", or a deadline whose
+real value would cost the suite a minute — and those are exercised in
+process instead.
+
+``run_tmt`` points HOME and XDG_STATE_HOME at a session sandbox, so no test
+can reach the developer's own state even if a future code path resolves
+them.
 """
 
 from __future__ import annotations

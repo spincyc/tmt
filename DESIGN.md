@@ -158,6 +158,17 @@ copying with provenance:
 - Divergence after vendoring is allowed (per-repo fitness beats shared-dep
   correctness); re-vendoring is a deliberate overwrite.
 
+## Naming (decided: `tmt-toolmaker` on PyPI, `tmt` on the command line)
+
+The distribution is `tmt-toolmaker` because teemtee's Test Management Tool
+owns `tmt` on PyPI (aiq precedent: `aiq-workqueue`). The console script stays
+`tmt`: decided by the owner 2026-07-29, accepting that it collides on a
+machine that also has teemtee's package installed. The habit this tool exists
+to build is typed dozens of times a session and is quoted verbatim in every
+repo's AGENTS.md fragment, so the short name is worth more than avoiding a
+collision with a package this project's users are unlikely to have. Revisit
+only if a real user reports the clash.
+
 ## tmt's own repo
 
 Mirrors aiq conventions: stdlib-only Python 3.11+, src-layout, zero deps,
@@ -186,10 +197,6 @@ AGENTS.md gains two lines pointing at tmt.json and `tmt new`.
 
 ## Open questions
 
-- **Name collision**: settled for distribution — the PyPI name is
-  `tmt-toolmaker` (teemtee's Test Management Tool owns `tmt`). The console
-  script is still `tmt`, which collides on a machine that has teemtee's
-  package installed; unresolved, and worth a decision before a PyPI release.
 - Candidate threshold default (2 notes, currently counted per repository
   rather than per session) and where it is configured (tmt.json config
   block?).

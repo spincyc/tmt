@@ -94,7 +94,7 @@ class VendorTest(TmtTestCase):
         self.assertEqual(failures, [])
         self.assertEqual(len(warnings), 1, warnings)
         self.assertIn("greet", warnings[0])
-        self.assertIn("sha256 drift", warnings[0])
+        self.assertIn("has a newer version", warnings[0])
         human = run_tmt(dest, "check")
         self.assertEqual(human.returncode, 0)
         self.assertTrue(
@@ -104,6 +104,49 @@ class VendorTest(TmtTestCase):
             ),
             human.stdout,
         )
+
+    def test_local_fork_alone_is_silent(self) -> None:
+        """Divergence after vendoring is sanctioned, so it must not warn.
+
+        Comparing only source-now against local-now cannot tell a local
+        fork from an upstream change, and warned with advice that would
+        discard the fork.
+        """
+        source, _ = self._source_with_stable_tool("greet")
+        dest = self.make_repo()
+        run_tmt(dest, "vendor", os.fspath(source), "greet", "--json")
+
+        local = dest / "tools" / "greet"
+        local.write_text(
+            local.read_text(encoding="utf-8") + "# local tweak\n",
+            encoding="utf-8",
+        )
+
+        returncode, failures, warnings = self.check_json(dest)
+        self.assertEqual((returncode, failures, warnings), (0, [], []))
+
+    def test_both_sides_changed_warns_about_losing_local_work(self) -> None:
+        source, _ = self._source_with_stable_tool("greet")
+        dest = self.make_repo()
+        run_tmt(dest, "vendor", os.fspath(source), "greet", "--json")
+
+        local = dest / "tools" / "greet"
+        local.write_text(
+            local.read_text(encoding="utf-8") + "# local tweak\n",
+            encoding="utf-8",
+        )
+        source_tool = source / "tools" / "greet"
+        source_tool.write_text(
+            source_tool.read_text(encoding="utf-8") + "# upstream change\n",
+            encoding="utf-8",
+        )
+
+        returncode, failures, warnings = self.check_json(dest)
+        self.assertEqual(returncode, 0)
+        self.assertEqual(failures, [])
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("both this copy and", warnings[0])
+        self.assertIn("discard the local changes", warnings[0])
 
     def test_vendor_stamps_url_when_source_has_origin_remote(self) -> None:
         source, _ = self._source_with_stable_tool("greet")

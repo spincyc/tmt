@@ -453,9 +453,21 @@ def _origin_drift(
         local_sha256 = sha256_file(tool)
     except OSError:
         return []
-    if source_sha256 != local_sha256:
+    # origin.sha256 is the content at vendoring time, so it is the merge
+    # base: comparing only source-now against local-now cannot tell an
+    # upstream change from the local fork this design sanctions, and would
+    # advise re-vendoring — the one action that discards the fork.
+    base_sha256 = origin["sha256"]
+    local_moved = local_sha256 != base_sha256
+    source_moved = source_sha256 != base_sha256
+    if source_moved and local_moved:
         return [
-            f"{tool_id}: vendored copy differs from {origin['repo']} "
-            "(sha256 drift); re-vendor deliberately to update"
+            f"{tool_id}: both this copy and {origin['repo']} changed since "
+            "vendoring; re-vendoring would discard the local changes"
+        ]
+    if source_moved:
+        return [
+            f"{tool_id}: {origin['repo']} has a newer version; re-vendor "
+            "deliberately to take it"
         ]
     return []

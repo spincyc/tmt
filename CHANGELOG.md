@@ -13,6 +13,26 @@ under `docs/contracts/` carry their own explicit versions. Changes made after a
 release accumulate in an `[Unreleased]` section rather than being backdated
 into a shipped one.
 
+## [Unreleased]
+
+### Fixed
+
+- Vendored-tool drift detection compared only the source's current content
+  against the local copy, so a purely local fork — the divergence the design
+  explicitly sanctions — drew a `WARN` advising the user to re-vendor, which
+  is the one action that discards the fork. Detection is now three-way against
+  `origin.sha256` as the merge base: a local-only fork is silent, an upstream
+  change reports that a newer version exists, and both sides changing reports
+  that re-vendoring would discard local work. Documented in
+  [vendoring-v1](docs/contracts/vendoring-v1.md), along with two limits it
+  makes visible: companions are not digested, and `tmt rename` silently ends
+  drift reporting for a vendored tool.
+
+### Changed
+
+- CI pins `actions/checkout@v7` and `actions/setup-python@v7`; the previous
+  majors target the deprecated Node 20.
+
 ## [0.1.0a5] - 2026-07-29
 
 A security-and-robustness pass: containment on every write path, honest

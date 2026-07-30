@@ -101,13 +101,31 @@ Divergence after vendoring is allowed by design: per-repo fitness beats
 shared-dependency correctness. Fork by editing the vendored copy in place;
 the `origin` stamp keeps the ancestry inspectable.
 
-`tmt check` surfaces drift as a warning, never a failure: when a stable
-tool's `origin.repo` is a readable local path and
-`<origin.repo>/tools/<id>` differs from the local copy by sha256, check
-emits one `WARN` line (JSON: an entry in `warnings`) and still exits 0. An
-unreachable or deleted source produces no warning. The remedies are
-symmetric and always deliberate: re-vendor to take the source's version, or
-keep the fork and live with the warning.
+`tmt check` surfaces drift as a warning, never a failure, and it is a
+three-way comparison. `origin.sha256` is the content at vendoring time, so
+it serves as the merge base against the local copy and the source's current
+`<origin.repo>/tools/<id>`:
+
+| Local vs base | Source vs base | Reported |
+|---|---|---|
+| same | same | nothing |
+| **changed** | same | **nothing** — this is the sanctioned fork |
+| same | changed | `WARN`: the source has a newer version; re-vendor to take it |
+| changed | changed | `WARN`: both changed since vendoring; re-vendoring would discard the local changes |
+
+Comparing only the source's current content against the local copy cannot
+distinguish those middle two rows, so a purely local fork drew a warning
+advising the one action — re-vendoring — that discards it.
+
+A stable tool whose `origin.repo` is unreachable or deleted produces no
+warning, and only stable tools are checked. Companions are not digested, so
+an upstream change confined to `tools/<id>.test` is invisible here. The
+remedies stay symmetric and deliberate: re-vendor to take the source's
+version, or keep the fork.
+
+`tmt rename` does not rewrite `origin`, and the source path is derived from
+the tool's id, so renaming a vendored tool silently ends drift reporting for
+it.
 
 Tools about tool-making graduate one step further — into tmt itself — by
 ordinary pull request, not by vendoring. See

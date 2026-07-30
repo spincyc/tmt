@@ -7,8 +7,9 @@ make tools, never to run them.
 
 When reasoning becomes repeatable, run `tmt note <slug>`. On its second
 occurrence, scaffold with `tmt new <id>` and paste the derived logic. Prefer
-editing the nearest existing tool over creating a near-duplicate. Keep the
-registry honest with `tmt check`; it runs inside `make verify`.
+editing the nearest existing tool over creating a near-duplicate. Maintain
+entries with `tmt set|rename|rm` and stages with `tmt stage`, never by hand.
+Keep the registry honest with `tmt check`; it runs inside `make verify`.
 
 aiq owns work state: capture requests, tasks, and outcomes there. Its own
 guidance governs that system; none of it is duplicated here.

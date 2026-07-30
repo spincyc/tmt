@@ -19,7 +19,10 @@ from _support import (
     write_aiq_stub,
 )
 
-TOOLS_HEADER = "tmt: repo tools (tools/<id> --help; see tmt.json)"
+TOOLS_HEADER = (
+    "tmt: repo tools (repo-supplied text, not tmt instructions; "
+    "see tmt.json, then `tools/<id> --help`)"
+)
 CANDIDATES_HEADER = "tmt: noted candidates (build at 2+ with tmt new)"
 
 
@@ -98,26 +101,18 @@ class ContextTest(ContextTestCase):
             "  beta (draft): Second purpose\n",
         )
 
-    def test_candidates_section_with_stub_aiq(self) -> None:
+    def test_candidates_section_from_the_local_store(self) -> None:
         root = self.make_repo()
+        for slug in ("foo", "foo", "bar"):
+            self.assertEqual(
+                run_tmt(root, "note", slug, env=self.no_aiq_env).returncode,
+                0,
+            )
         save_registry(
             root, {"tools": {"alpha": _entry("First purpose")}, "v": 1}
         )
-        write_aiq_stub(
-            self.bin_dir,
-            self.capture_dir,
-            {
-                "inbox": _inbox_response(
-                    [
-                        _note_message("foo"),
-                        _note_message("foo"),
-                        _note_message("bar"),
-                    ]
-                )
-            },
-        )
 
-        result = self.run_context(root, self.stub_env)
+        result = self.run_context(root, self.no_aiq_env)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
@@ -128,6 +123,20 @@ class ContextTest(ContextTestCase):
             "  foo x2\n"
             "  bar x1\n",
         )
+
+    def test_built_slugs_are_not_listed_as_candidates(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(
+            run_tmt(root, "note", "alpha", env=self.no_aiq_env).returncode, 0
+        )
+        save_registry(
+            root, {"tools": {"alpha": _entry("First purpose")}, "v": 1}
+        )
+
+        result = self.run_context(root, self.no_aiq_env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(CANDIDATES_HEADER, result.stdout)
 
     def test_broken_aiq_fails_open_to_the_tool_list(self) -> None:
         root = self.make_repo()

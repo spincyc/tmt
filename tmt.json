@@ -1,4 +1,19 @@
 {
-  "tools": {},
+  "tools": {
+    "sanity-check": {
+      "lang": "sh",
+      "purpose": "Confirm the required commands and Python version are present.",
+      "stage": "draft",
+      "usage": "tools/sanity-check [--help]"
+    },
+    "verify": {
+      "purpose": "Run every repository verification gate.",
+      "requires": [
+        "sanity-check"
+      ],
+      "stage": "draft",
+      "usage": "tools/verify [--help]"
+    }
+  },
   "v": 1
 }

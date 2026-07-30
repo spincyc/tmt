@@ -14,7 +14,8 @@
       "type": "object",
       "description": "One manifest entry per tool, keyed by tool id.",
       "propertyNames": {
-        "pattern": "^[a-z0-9][a-z0-9-]*$"
+        "pattern": "^[a-z0-9][a-z0-9-]*$",
+        "maxLength": 64
       },
       "additionalProperties": {
         "$ref": "#/$defs/tool"
@@ -24,7 +25,9 @@
   "$defs": {
     "id": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9-]*$"
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "maxLength": 64,
+      "description": "Tool id: lowercase alphanumerics and hyphens, at most 64 characters."
     },
     "tool": {
       "type": "object",

@@ -6,11 +6,17 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_MAX_WORDS = 150
 FRAGMENT_MAX_WORDS = 50
+HELP_TEXT = (
+    "Run every repository verification gate; fail on the first offender set.\n"
+    "usage: tools/verify [--help]\n"
+)
+IGNORED_PREFIXES = ("build/", "dist/", ".journal/")
 
 
 def run(
@@ -82,13 +88,32 @@ def check_tracked_paths() -> None:
         if path.endswith(".sqlite3")
         or "__pycache__" in path.split("/")
         or path == ".journal"
-        or path.startswith(".journal/")
+        or path.startswith(IGNORED_PREFIXES)
+        or any(part.endswith(".egg-info") for part in path.split("/"))
     ]
     if offenders:
-        raise RuntimeError(f"private paths are tracked: {', '.join(offenders)}")
+        raise RuntimeError(
+            f"private or generated paths are tracked: {', '.join(offenders)}"
+        )
 
 
-def check_tests() -> None:
+def check_version() -> None:
+    with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
+        declared = tomllib.load(handle)["project"]["version"]
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, os.fspath(REPO_ROOT / "src"))
+    try:
+        from tmt import __version__
+    finally:
+        sys.path.pop(0)
+    if declared != __version__:
+        raise RuntimeError(
+            f"pyproject version {declared!r} differs from "
+            f"tmt.__version__ {__version__!r}"
+        )
+
+
+def source_environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     source_path = str(REPO_ROOT / "src")
@@ -96,9 +121,20 @@ def check_tests() -> None:
     environment["PYTHONPATH"] = (
         f"{source_path}{os.pathsep}{existing_path}" if existing_path else source_path
     )
+    return environment
+
+
+def check_tests() -> None:
     run(
         [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
-        environment=environment,
+        environment=source_environment(),
+    )
+
+
+def check_registry() -> None:
+    run(
+        [sys.executable, "-m", "tmt", "check"],
+        environment=source_environment(),
     )
 
 
@@ -110,20 +146,41 @@ def check_sanity() -> None:
     run([str(REPO_ROOT / "tools" / "sanity-check")])
 
 
-def main() -> int:
+def in_git_work_tree() -> bool:
+    """Whether git checks can run at all — an sdist is not a work tree."""
+    try:
+        return run(["git", "rev-parse", "--is-inside-work-tree"]).strip() == (
+            "true"
+        )
+    except (OSError, RuntimeError):
+        return False
+
+
+def main(argv: list[str]) -> int:
+    if "-h" in argv or "--help" in argv:
+        print(HELP_TEXT, end="")
+        return 0
     try:
         check_sanity()
     except (OSError, RuntimeError) as error:
         print(f"FAIL check_sanity: {error}")
         return 1
-    checks = (
+    checks = [
         check_bootstrap,
         check_fragment,
         check_python,
-        check_tracked_paths,
+        check_version,
+        check_registry,
         check_tests,
-        check_git_hygiene,
-    )
+    ]
+    git_checks = (check_tracked_paths, check_git_hygiene)
+    if in_git_work_tree():
+        checks.extend(git_checks)
+    else:
+        # An extracted sdist ships the suite but no repository; say which
+        # gates therefore did not run rather than implying full coverage.
+        skipped = ", ".join(check.__name__ for check in git_checks)
+        print(f"SKIP {skipped}: not a git work tree")
     failures: list[str] = []
     for check in checks:
         try:
@@ -139,4 +196,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

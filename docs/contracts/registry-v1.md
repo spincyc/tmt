@@ -16,6 +16,13 @@ Writers emit `json.dumps(data, sort_keys=True, indent=2)` plus one trailing
 newline. Key-sorting and one object per tool keep diffs clean and merge
 conflicts rare; run `tmt check` as the post-merge fixup.
 
+Every write is durable and contained: the new content is staged in a sibling
+temporary file, flushed, `fsync`ed, and renamed over the target, so an
+interrupted save can never leave a truncated committed registry. A `tmt.json`
+that is a symlink to another path *inside* the repository is followed, so the
+link survives the write and keeps its mode; one resolving outside the
+repository root is refused with `containment` (exit 3).
+
 ## Shape
 
 ```json
@@ -75,7 +82,9 @@ collected and reported, never just the first.
 
 | Rule | Applies to | Enforced by |
 |---|---|---|
-| Tool id matches `^[a-z0-9][a-z0-9-]*$` and equals the filename `tools/<id>` | all | validator + check |
+| Tool id matches `^[a-z0-9][a-z0-9-]*$` in full and equals the filename `tools/<id>` | all | validator + check |
+| Tool id is at most 64 characters | all | validator + check |
+| `tools/<id>` resolves inside the repository root — a symlink out of the repo is refused, never followed | all | check + every write path |
 | Every entry has its file; every file has its entry (parity both directions) | all | check |
 | `purpose` at most 80 characters — it is the per-session discovery cost | all | validator |
 | Source lints: Python must compile; sh passes `sh -n`; other langs skipped | all | check |
@@ -88,6 +97,19 @@ collected and reported, never just the first.
 | Must not `require` a draft tool | stable | check |
 | No hardcoded absolute paths: body contains neither `/home/` nor this repo's own absolute path | stable | check |
 | Vendored copy differing from a readable `origin.repo` by sha256 | stable | check (warning only) |
+
+Ids are matched in full (a trailing newline or any other stray character is
+invalid, never tolerated) and capped at 64 characters, because an id becomes a
+filename, a `requires` entry, and a line of session context. `tmt new` and
+`tmt rename` reject an over-long or ill-formed id with `usage` (exit 2); a
+registry that already carries one fails validation with
+`tools['<id>']: tool id is N characters; the cap is 64`.
+
+Containment is a registry rule, not only a write rule: `tools/<id>` must
+resolve inside the repository root. A registered tool that is a symlink
+pointing out of the repository is a `tmt check` failure, and every command
+that would write it, copy it, delete it, or rename it refuses with
+`containment` (exit 3) instead of following the link.
 
 Mentioning another registered tool's id in a tool body implies a dependency
 and must be declared in `requires`. The gate reads each body as text
@@ -118,8 +140,14 @@ gate's test.
 Readers fill defaults when interpreting an entry (`tmt show` reports this
 effective view). `tmt new` writes every field explicitly — including
 `json: true`, because its scaffolds ship a working `--json` stub — except
-the optional `config`, which is added by hand when a tool grows a config
-file.
+the optional `config`, which is added by `tmt set config` when a tool grows a
+config file.
+
+No entry field needs hand-editing: `tmt set` writes `purpose`, `usage`,
+`lang`, `mutates`, `json`, `idempotent`, `requires`, and `config` and
+validates the whole registry before saving; `tmt stage` owns `stage`;
+`tmt vendor`/`tmt adopt` own `origin`; `tmt rm` and `tmt rename` keep entries
+and files in step. See [cli-v1.md](cli-v1.md).
 
 ## Versioning
 

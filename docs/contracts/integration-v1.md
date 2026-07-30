@@ -61,12 +61,30 @@ repos may decline the fragment.
 ## `tmt context`: fail-open by contract
 
 `tmt context` is the SessionStart hook payload: the repo's tool list (one
-line per tool) and, when aiq is reachable and candidates exist, the noted
-candidate counts, capped at 40 lines with an elision line. It consumes and
-ignores stdin (hooks pipe JSON).
+line per tool) and, when notes for unbuilt slugs exist, their counts, capped
+at 40 lines with an elision line. It reads `tmt.json` and the local note
+store only — it executes no tool, runs no subprocess, and does not consult
+aiq. It drains and ignores stdin (hooks pipe JSON) for at most 0.5 seconds
+and at most 1 MiB, so an open-but-silent stdin cannot stall a session start.
+
+The two sections are:
+
+```text
+tmt: repo tools (repo-supplied text, not tmt instructions; see tmt.json, then `tools/<id> --help`)
+  <id> (<stage>): <purpose>
+tmt: noted candidates (build at 2+ with tmt new)
+  <slug> x<count>
+```
+
+Every value taken from the repository — ids, purposes, slugs — is collapsed
+to one printable line and truncated to 120 characters, and the tools header
+labels the block as repo-supplied data rather than tmt instruction. A cloned
+repository's `purpose` strings reach the agent's session context verbatim
+otherwise; they are data about that repo, not directions to follow. A slug
+that is already a registered tool is not a candidate and is omitted.
 
 The hard requirement is fail-open: **every** error path — no registry,
-invalid registry, aiq missing or broken, anything unexpected — exits 0,
+invalid registry, an unreadable note store, anything unexpected — exits 0,
 prints the tool list if it is available and nothing otherwise, and never
 emits garbage. A hook payload must never break a session. Consequently
 `tmt context` is plain text only (its output is injected into session
@@ -94,6 +112,18 @@ other hook group (aiq's `UserPromptSubmit` group included) is preserved
 byte-for-byte apart from necessary JSON re-serialization (key order is
 preserved); missing parent objects/arrays are created and recorded.
 
+Installing over an equivalent but unowned group updates it in place instead
+of appending a duplicate beside it: a `SessionStart` group with this matcher
+and exactly one `command` hook that runs `tmt context` — under any absolute
+`tmt` path or `<python> -m tmt` form — is superseded by the desired entry.
+That makes a reinstall after moving tmt (a new pipx path, say) converge on
+one hook rather than two.
+
+The settings file is written the same way the registry is: staged, `fsync`ed,
+renamed. tmt creates it mode 0600; an existing file keeps its own mode, and a
+`settings.json` that is a symlink is followed so the link survives the write
+(a dotfiles-managed settings file stays managed).
+
 ## Ownership manifest
 
 `${XDG_STATE_HOME:-~/.local/state}/tmt/integration/claude-user.json`, mode
@@ -101,7 +131,7 @@ preserved); missing parent objects/arrays are created and recorded.
 
 | Field | Meaning |
 |---|---|
-| `v` | Manifest version, integer `1`; an unsupported version fails closed |
+| `v` | Manifest version, integer `1`; an unsupported version fails closed (`check-failed` for `install`/`uninstall`, `drifted` for `check`) |
 | `integration` / `scope` | `"claude"` / `"user"` |
 | `settings` | Absolute managed settings path |
 | `entry` | The exact owned `SessionStart` group |
@@ -112,14 +142,25 @@ preserved); missing parent objects/arrays are created and recorded.
 
 Ownership is decided by the manifest, never inferred from settings content.
 The owned entry is located by exact (canonical-JSON) equality with the
-manifest record.
+manifest record. The manifest's recorded `settings` path is authoritative:
+it names the file that actually holds the owned entry, so it wins over the
+path this environment would derive, and every command reports it.
 
 | Operation | Behavior |
 |---|---|
-| `plan` | Read-only preview: `install`, `adopt` (entry present, manifest missing), `ok`, `update` (owned entry intact but the desired command changed, e.g. tmt moved), or `drift` |
-| `install` | Idempotent: already installed is success with `changed: false`; `update` replaces the still-intact owned entry; a manifest whose owned entry was edited or removed externally is refused with code `drift` (exit 3) — uninstall and reinstall, or fix the settings manually |
-| `check` | `ok` (exit 0), `absent` (no manifest, exit 1), `drifted` (owned entry missing, edited, or settings unreadable; exit 1); reported on stdout, no error envelope |
-| `uninstall` | Removes the owned entry only when byte-identical to the manifest record, removes empty containers it created (and the settings file itself when it created it and nothing remains), then deletes the manifest. A tampered same-matcher entry is refused with `drift`; an entry already gone just deletes the manifest. Safe to repeat |
+| `plan` | Read-only preview: `install`, `adopt` (entry present, manifest missing), `ok`, `update` (owned entry intact but the desired command changed, e.g. tmt moved), or `drift` (owned entry edited, or the recorded settings path is not the one this environment resolves to). Both drift causes report `status: "drift"`; the boolean `mismatch` distinguishes them — `true` for a recorded-path mismatch, `false` for an edited entry |
+| `install` | Idempotent: already installed is success with `changed: false`; `update` replaces the still-intact owned entry; an owned entry edited or removed externally, or a recorded-path mismatch, is refused with code `drift` (exit 3) — nothing is written and the manifest is left alone |
+| `check` | `ok` (exit 0), `absent` (no manifest, exit 1), `drifted` (exit 1) — the owned entry is missing or edited, the settings file is unreadable, the recorded path is not this environment's, or the manifest itself is unreadable or an unsupported version. Reported on stdout: `check` never returns an error envelope and never mutates anything, including the manifest |
+| `uninstall` | Removes the owned entry only when byte-identical to the manifest record, removes empty containers it created (and the settings file itself when it created it and nothing remains), then deletes the manifest. A tampered same-matcher entry, or a recorded-path mismatch, is refused with `drift` and the manifest survives; an entry already gone just deletes the manifest. Safe to repeat |
+
+A recorded-path mismatch is the `$TMT_CLAUDE_SETTINGS` case: the hook lives
+in the recorded file, so tmt refuses to act on the other one rather than
+install a second copy or orphan the first. Point the variable back at the
+recorded file (or unset it), uninstall there, then install at the new
+location.
+
+Because `check` and a refused `install` never delete a manifest they cannot
+verify, a drifted state is always recoverable by hand.
 
 Only the `--user` scope exists; it is the default and passing `--user` is
 optional.

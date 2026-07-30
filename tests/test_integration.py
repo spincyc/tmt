@@ -36,6 +36,14 @@ FOREIGN_SETTINGS: dict[str, Any] = {
 }
 
 
+FOREIGN_GROUP: dict[str, Any] = {
+    "matcher": "startup",
+    "hooks": [{"type": "command", "command": "/usr/bin/true", "timeout": 5}],
+}
+
+IS_ROOT = os.geteuid() == 0
+
+
 def expected_entry() -> dict[str, Any]:
     return {
         "matcher": "startup|resume|clear",
@@ -43,6 +51,20 @@ def expected_entry() -> dict[str, Any]:
             {
                 "type": "command",
                 "command": f"{shlex.quote(sys.executable)} -m tmt context",
+                "timeout": 10,
+            }
+        ],
+    }
+
+
+def stale_entry() -> dict[str, Any]:
+    """The owned group as an older tmt installation would have written it."""
+    return {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+            {
+                "type": "command",
+                "command": "/old/bin/tmt context",
                 "timeout": 10,
             }
         ],
@@ -65,9 +87,20 @@ class IntegrationTestCase(TmtTestCase):
         self.cwd = self.make_dir()
 
     def run_integration(
-        self, *arguments: str
+        self, *arguments: str, env: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
-        return run_tmt(self.cwd, "integration", *arguments, env=self.env)
+        return run_tmt(
+            self.cwd, "integration", *arguments, env=env or self.env
+        )
+
+    def relocated_env(self) -> dict[str, str]:
+        """The same state directory with the managed settings path moved."""
+        return {
+            **self.env,
+            "TMT_CLAUDE_SETTINGS": os.fspath(
+                self.home / "elsewhere" / "settings.json"
+            ),
+        }
 
     def write_settings(self, document: dict[str, Any]) -> None:
         self.settings.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +114,19 @@ class IntegrationTestCase(TmtTestCase):
 
     def read_manifest(self) -> dict[str, Any]:
         return json.loads(self.manifest.read_text(encoding="utf-8"))
+
+    def write_manifest(self, manifest: dict[str, Any]) -> None:
+        self.manifest.parent.mkdir(parents=True, exist_ok=True)
+        self.manifest.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def write_owned_groups(self, groups: list[Any]) -> None:
+        document = self.read_settings()
+        document["hooks"]["SessionStart"] = groups
+        self.write_settings(document)
 
     def tamper_owned_entry(self) -> None:
         document = self.read_settings()
@@ -322,6 +368,213 @@ class UninstallTest(IntegrationTestCase):
 
         self.assertEqual(payload["removed"], False)
         self.assertFalse(self.manifest.exists())
+
+
+class SettingsFileTest(IntegrationTestCase):
+    @unittest.skipIf(IS_ROOT, "file modes are unenforced for root")
+    def test_install_preserves_a_restrictive_settings_mode(self) -> None:
+        self.write_settings({"env": {"MY_API_KEY": "s3cret"}})
+        self.settings.chmod(0o600)
+
+        self.assert_json_success(
+            self.run_integration("install", "claude", "--user", "--json")
+        )
+
+        self.assertEqual(self.settings.stat().st_mode & 0o777, 0o600)
+        document = self.read_settings()
+        self.assertEqual(document["env"], {"MY_API_KEY": "s3cret"})
+        self.assertEqual(
+            document["hooks"]["SessionStart"], [expected_entry()]
+        )
+
+    @unittest.skipIf(IS_ROOT, "file modes are unenforced for root")
+    def test_install_creates_private_settings_and_manifest(self) -> None:
+        self.assert_json_success(
+            self.run_integration("install", "claude", "--json")
+        )
+
+        self.assertEqual(self.settings.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.manifest.stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipIf(IS_ROOT, "file modes are unenforced for root")
+    def test_install_leaves_a_permissive_mode_alone(self) -> None:
+        self.write_settings(FOREIGN_SETTINGS)
+        self.settings.chmod(0o644)
+
+        self.run_integration("install", "claude")
+
+        self.assertEqual(self.settings.stat().st_mode & 0o777, 0o644)
+
+    def test_install_writes_through_a_symlinked_settings_file(self) -> None:
+        target = self.home / "dotfiles" / "claude-settings.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(FOREIGN_SETTINGS, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        original = target.read_bytes()
+        self.settings.parent.mkdir(parents=True, exist_ok=True)
+        self.settings.symlink_to(target)
+
+        self.assert_json_success(
+            self.run_integration("install", "claude", "--json")
+        )
+
+        self.assertTrue(self.settings.is_symlink())
+        self.assertEqual(os.readlink(self.settings), os.fspath(target))
+        document = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(document["model"], "opus")
+        self.assertEqual(
+            document["hooks"]["SessionStart"], [expected_entry()]
+        )
+        self.assertEqual(self.read_settings(), document)
+
+        self.assert_json_success(
+            self.run_integration("uninstall", "claude", "--json")
+        )
+
+        self.assertTrue(self.settings.is_symlink())
+        self.assertEqual(target.read_bytes(), original)
+
+
+class RelocatedSettingsTest(IntegrationTestCase):
+    def test_uninstall_with_a_relocated_path_refuses_and_keeps_state(
+        self,
+    ) -> None:
+        self.run_integration("install", "claude")
+        before = self.settings.read_bytes()
+
+        result = self.run_integration(
+            "uninstall", "claude", "--json", env=self.relocated_env()
+        )
+
+        self.assert_json_error(result, "drift", 3)
+        self.assertTrue(self.manifest.exists())
+        self.assertEqual(self.settings.read_bytes(), before)
+        self.assertEqual(self.read_manifest()["entry"], expected_entry())
+
+    def test_install_with_a_relocated_path_refuses(self) -> None:
+        self.run_integration("install", "claude")
+        relocated = self.relocated_env()
+
+        result = self.run_integration(
+            "install", "claude", "--json", env=relocated
+        )
+
+        self.assert_json_error(result, "drift", 3)
+        self.assertFalse(
+            os.path.exists(relocated["TMT_CLAUDE_SETTINGS"]),
+            "install must not fork the managed file",
+        )
+        self.assertTrue(self.manifest.exists())
+
+    def test_check_with_a_relocated_path_is_drifted(self) -> None:
+        self.run_integration("install", "claude")
+
+        result = self.run_integration(
+            "check", "claude", "--json", env=self.relocated_env()
+        )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stderr, "")
+        payload = self.parse_single_json(result.stdout)
+        self.assertEqual(payload["status"], "drifted")
+        self.assertEqual(payload["settings"], os.fspath(self.settings))
+
+    def test_plan_with_a_relocated_path_reports_drift(self) -> None:
+        self.run_integration("install", "claude")
+
+        payload = self.assert_json_success(
+            self.run_integration(
+                "plan", "claude", "--json", env=self.relocated_env()
+            )
+        )
+
+        self.assertEqual(payload["status"], "drift")
+        self.assertEqual(payload["changed"], False)
+
+
+class CorruptManifestTest(IntegrationTestCase):
+    def test_check_reports_drifted_for_an_unparseable_manifest(self) -> None:
+        self.run_integration("install", "claude")
+        self.manifest.write_text("{ not json", encoding="utf-8")
+
+        result = self.run_integration("check", "claude", "--json")
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stderr, "")
+        payload = self.parse_single_json(result.stdout)
+        self.assertEqual(payload["status"], "drifted")
+
+    def test_check_reports_drifted_for_an_unsupported_manifest_version(
+        self,
+    ) -> None:
+        self.run_integration("install", "claude")
+        manifest = self.read_manifest()
+        manifest["v"] = 99
+        self.write_manifest(manifest)
+
+        result = self.run_integration("check", "claude")
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "drifted\n")
+
+
+class ReinstallTest(IntegrationTestCase):
+    def test_reinstall_updates_a_changed_command_in_place(self) -> None:
+        self.write_settings(FOREIGN_SETTINGS)
+        self.run_integration("install", "claude")
+        manifest = self.read_manifest()
+        manifest["entry"] = stale_entry()
+        self.write_manifest(manifest)
+        self.write_owned_groups([stale_entry()])
+
+        preview = self.assert_json_success(
+            self.run_integration("plan", "claude", "--json")
+        )
+        self.assertEqual(preview["status"], "update")
+        self.assertEqual(preview["changed"], True)
+
+        payload = self.assert_json_success(
+            self.run_integration("install", "claude", "--json")
+        )
+
+        self.assertEqual(payload["changed"], True)
+        document = self.read_settings()
+        self.assertEqual(
+            document["hooks"]["SessionStart"], [expected_entry()]
+        )
+        self.assertEqual(
+            document["hooks"]["UserPromptSubmit"],
+            FOREIGN_SETTINGS["hooks"]["UserPromptSubmit"],
+        )
+        self.assertEqual(self.read_manifest()["entry"], expected_entry())
+
+    def test_install_supersedes_a_stale_entry_without_a_manifest(
+        self,
+    ) -> None:
+        self.write_settings(FOREIGN_SETTINGS)
+        self.run_integration("install", "claude")
+        self.write_owned_groups([FOREIGN_GROUP, stale_entry()])
+        self.manifest.unlink()
+
+        payload = self.assert_json_success(
+            self.run_integration("install", "claude", "--json")
+        )
+
+        self.assertEqual(payload["changed"], True)
+        self.assertEqual(
+            self.read_settings()["hooks"]["SessionStart"],
+            [FOREIGN_GROUP, expected_entry()],
+        )
+        manifest = self.read_manifest()
+        self.assertEqual(manifest["entry"], expected_entry())
+        self.assertEqual(manifest["created_file"], False)
+        self.assertEqual(manifest["created_containers"], [])
+
+        result = self.run_integration("check", "claude", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

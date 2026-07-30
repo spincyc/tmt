@@ -17,7 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from tmt import checks, registry
+from tmt import checks, paths, registry
 from tmt.registry import TmtError
 
 _COMPANION_SUFFIXES = (".md", ".test")
@@ -69,18 +69,45 @@ def _origin_stamp(source_root: Path, copied_tool: Path) -> dict[str, str]:
 
 
 def _copy_tool(source_root: Path, dest_root: Path, tool_id: str) -> Path:
+    """Copy a tool and its companions, or copy nothing at all.
+
+    Every source is contained-checked before the first byte is written, so
+    a refusal cannot leave a half-copied tool behind for `tmt check` to
+    find.
+    """
     source = registry.tool_path(source_root, tool_id)
     dest = registry.tool_path(dest_root, tool_id)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, dest)
-    shutil.copymode(source, dest)
+    paths.resolve_within(source_root, source, label=f"source tools/{tool_id}")
+    paths.resolve_within(dest_root, dest.parent, label="tools directory")
+    if source.resolve() == dest.resolve():
+        raise TmtError(
+            "usage",
+            f"source and destination tools/{tool_id} are the same file",
+        )
+    planned: list[tuple[Path, Path]] = [(source, dest)]
     for suffix in _COMPANION_SUFFIXES:
         companion = source.with_name(source.name + suffix)
         if companion.is_file():
-            target = dest.with_name(dest.name + suffix)
-            shutil.copyfile(companion, target)
-            shutil.copymode(companion, target)
+            paths.resolve_within(
+                source_root,
+                companion,
+                label=f"source tools/{tool_id}{suffix}",
+            )
+            planned.append(
+                (companion, dest.with_name(dest.name + suffix))
+            )
+    paths.make_directory(dest.parent)
+    for source_path, dest_path in planned:
+        _copy_file(source_path, dest_path)
     return dest
+
+
+def _copy_file(source: Path, dest: Path) -> None:
+    try:
+        shutil.copyfile(source, dest)
+        shutil.copymode(source, dest)
+    except OSError as error:
+        raise TmtError("io-error", f"{dest}: {error}") from error
 
 
 def _registered_tool(
@@ -109,6 +136,17 @@ def vendor(root: Path, source: Path, tool_id: str) -> dict[str, Any]:
     source_root = source.resolve()
     _, entry = _registered_tool(source_root, tool_id, role="source repo")
     data = registry.load(root)
+    missing = [
+        dependency
+        for dependency in registry.effective(entry)["requires"]
+        if dependency not in data["tools"]
+    ]
+    if missing:
+        raise TmtError(
+            "portability",
+            f"tool {tool_id!r} requires {', '.join(sorted(missing))} which "
+            "is not registered here; vendor the dependencies first",
+        )
     dest_tool = _copy_tool(source_root, root, tool_id)
     origin = _origin_stamp(source_root, dest_tool)
     stamped = dict(entry)

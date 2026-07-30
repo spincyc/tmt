@@ -14,29 +14,79 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
 
-from tmt import agentsmd, registry, scaffold
+from tmt import agentsmd, paths, registry, scaffold
+from tmt.registry import TmtError
 
 HELP_TIMEOUT_SECONDS = 5
 TEST_TIMEOUT_SECONDS = 60
+LINT_TIMEOUT_SECONDS = 10
+SHA256_MAX_BYTES = 64 * 1024 * 1024
 _COMPANION_SUFFIXES = (".md", ".test")
+_READ_BLOCK_BYTES = 1024 * 1024
 
 
 def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """Hash a regular file, refusing anything unbounded (``/dev/zero``)."""
+    if not path.is_file():
+        raise OSError(f"{path} is not a regular file")
+    digest = hashlib.sha256()
+    read = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(_READ_BLOCK_BYTES):
+            read += len(chunk)
+            if read > SHA256_MAX_BYTES:
+                raise OSError(
+                    f"{path} exceeds the {SHA256_MAX_BYTES}-byte hash cap"
+                )
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _run(
+    command: list[str], *, timeout: int, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run ``command`` in its own session so a timeout kills descendants."""
+    with subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_group(process)
+            raise
+    return subprocess.CompletedProcess(
+        command, process.returncode, stdout, stderr
+    )
+
+
+def _terminate_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        process.kill()
+    try:
+        process.communicate(timeout=HELP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def capture_help(path: Path) -> tuple[bool, str]:
     """Run ``path --help``; return (ok, help output or failure detail)."""
     try:
-        completed = subprocess.run(
-            [os.fspath(path), "--help"],
-            capture_output=True,
-            text=True,
-            timeout=HELP_TIMEOUT_SECONDS,
+        completed = _run(
+            [os.fspath(path), "--help"], timeout=HELP_TIMEOUT_SECONDS
         )
     except subprocess.TimeoutExpired:
         return False, f"--help did not finish within {HELP_TIMEOUT_SECONDS}s"
@@ -47,9 +97,16 @@ def capture_help(path: Path) -> tuple[bool, str]:
     return True, completed.stdout
 
 
+def _read_body(tool: Path) -> str:
+    try:
+        return tool.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise TmtError("io-error", f"{tool}: {error}") from error
+
+
 def portability_findings(root: Path, tool_id: str, tool: Path) -> list[str]:
     """Hardcoded-absolute-path findings in the tool body."""
-    body = tool.read_text(encoding="utf-8", errors="replace")
+    body = _read_body(tool)
     findings: list[str] = []
     if "/home/" in body:
         findings.append(
@@ -80,7 +137,7 @@ def undeclared_composition(
     """
     try:
         text = tool.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return []
     body = "\n".join(
         line
@@ -136,6 +193,8 @@ def run_checks(root: Path) -> tuple[list[str], list[str]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         return [f"registry: tmt.json does not parse: {error}"], warnings
+    except OSError as error:
+        return [f"registry: tmt.json cannot be read: {error}"], warnings
     validation = registry.validate(data)
     if validation:
         return [f"registry: {message}" for message in validation], warnings
@@ -153,16 +212,24 @@ def run_checks(root: Path) -> tuple[list[str], list[str]]:
                 f"{tool_id}: tools/{tool_id} missing for tmt.json entry"
             )
             continue
-        failures.extend(_check_tool(tool_id, entry, tool))
-        failures.extend(
-            undeclared_composition(tool_id, entry, tool, tools)
-        )
-        if entry["stage"] == "stable":
-            stable_failures, stable_warnings = _check_stable(
-                root, tool_id, entry, tool, tools
+        try:
+            paths.resolve_within(root, tool, label=f"tools/{tool_id}")
+        except TmtError as error:
+            failures.append(f"{tool_id}: {error}")
+            continue
+        try:
+            failures.extend(_check_tool(tool_id, entry, tool))
+            failures.extend(
+                undeclared_composition(tool_id, entry, tool, tools)
             )
-            failures.extend(stable_failures)
-            warnings.extend(stable_warnings)
+            if entry["stage"] == "stable":
+                stable_failures, stable_warnings = _check_stable(
+                    root, tool_id, entry, tool, tools
+                )
+                failures.extend(stable_failures)
+                warnings.extend(stable_warnings)
+        except TmtError as error:
+            failures.append(f"{tool_id}: {error}")
     failures.extend(_check_requires(tools))
     return failures, warnings
 
@@ -186,20 +253,27 @@ def _check_tool(
     lang = entry["lang"]
     if lang == "python":
         try:
-            compile(
-                tool.read_text(encoding="utf-8", errors="replace"),
-                os.fspath(tool),
-                "exec",
-            )
+            compile(_read_body(tool), os.fspath(tool), "exec")
         except (SyntaxError, ValueError) as error:
             failures.append(f"{tool_id}: python syntax error: {error}")
     elif lang == "sh":
-        lint = subprocess.run(
-            ["sh", "-n", os.fspath(tool)], capture_output=True, text=True
-        )
-        if lint.returncode != 0:
-            detail = (lint.stderr.strip().splitlines() or ["sh -n failed"])[0]
-            failures.append(f"{tool_id}: sh syntax error: {detail}")
+        try:
+            lint = _run(
+                ["sh", "-n", os.fspath(tool)], timeout=LINT_TIMEOUT_SECONDS
+            )
+        except subprocess.TimeoutExpired:
+            failures.append(
+                f"{tool_id}: sh -n did not finish within "
+                f"{LINT_TIMEOUT_SECONDS}s"
+            )
+        except OSError as error:
+            failures.append(f"{tool_id}: sh -n could not run: {error}")
+        else:
+            if lint.returncode != 0:
+                detail = (
+                    lint.stderr.strip().splitlines() or ["sh -n failed"]
+                )[0]
+                failures.append(f"{tool_id}: sh syntax error: {detail}")
     if not os.access(tool, os.X_OK):
         failures.append(
             f"{tool_id}: executable bit not set on tools/{tool_id}"
@@ -235,22 +309,31 @@ def _find_cycles(tools: dict[str, Any]) -> list[str]:
     }
     failures: list[str] = []
     state: dict[str, int] = {}  # 1 = on stack, 2 = finished
-
-    def visit(node: str, stack: list[str]) -> None:
-        state[node] = 1
-        stack.append(node)
-        for dependency in graph[node]:
-            if state.get(dependency) == 1:
-                cycle = [*stack[stack.index(dependency):], dependency]
-                failures.append("requires cycle: " + " -> ".join(cycle))
-            elif dependency not in state:
-                visit(dependency, stack)
-        stack.pop()
-        state[node] = 2
-
-    for node in sorted(graph):
-        if node not in state:
-            visit(node, [])
+    for start in sorted(graph):
+        if start in state:
+            continue
+        stack: list[str] = []
+        # Iterative DFS: a pathological requires chain must not exhaust
+        # the interpreter stack.
+        work: list[tuple[str, int]] = [(start, 0)]
+        state[start] = 1
+        stack.append(start)
+        while work:
+            node, index = work[-1]
+            if index < len(graph[node]):
+                work[-1] = (node, index + 1)
+                dependency = graph[node][index]
+                if state.get(dependency) == 1:
+                    cycle = [*stack[stack.index(dependency):], dependency]
+                    failures.append("requires cycle: " + " -> ".join(cycle))
+                elif dependency not in state:
+                    state[dependency] = 1
+                    stack.append(dependency)
+                    work.append((dependency, 0))
+                continue
+            state[node] = 2
+            stack.pop()
+            work.pop()
     return failures
 
 
@@ -271,7 +354,7 @@ def _check_stable(
         failures.append(
             f"{tool_id}: executable bit not set on tools/{tool_id}.test"
         )
-    elif test.read_bytes() == scaffold.render_test(tool_id).encode("utf-8"):
+    elif _read_body(test) == scaffold.render_test(tool_id):
         failures.append(
             f"{tool_id}: tools/{tool_id}.test is the unmodified scaffold; "
             "write real assertions before promoting"
@@ -293,12 +376,8 @@ def _check_stable(
 
 def _run_test(root: Path, tool_id: str, test: Path) -> list[str]:
     try:
-        completed = subprocess.run(
-            [os.fspath(test)],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=TEST_TIMEOUT_SECONDS,
+        completed = _run(
+            [os.fspath(test)], cwd=root, timeout=TEST_TIMEOUT_SECONDS
         )
     except subprocess.TimeoutExpired:
         return [
@@ -323,9 +402,10 @@ def _origin_drift(
     source = Path(origin["repo"]) / "tools" / tool_id
     try:
         source_sha256 = sha256_file(source)
+        local_sha256 = sha256_file(tool)
     except OSError:
         return []
-    if source_sha256 != sha256_file(tool):
+    if source_sha256 != local_sha256:
         return [
             f"{tool_id}: vendored copy differs from {origin['repo']} "
             "(sha256 drift); re-vendor deliberately to update"

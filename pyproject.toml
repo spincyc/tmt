@@ -7,6 +7,9 @@ name = "tmt-toolmaker"
 version = "0.1.0a4"
 description = "Tool Making Tool: turn repeatable agent reasoning into repo-local tools"
 readme = "README.md"
+authors = [
+  { name = "spincyc" },
+]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
@@ -31,6 +34,11 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development",
 ]
+
+[project.urls]
+Homepage = "https://github.com/spincyc/tmt"
+Repository = "https://github.com/spincyc/tmt"
+Changelog = "https://github.com/spincyc/tmt/blob/main/CHANGELOG.md"
 
 [project.scripts]
 tmt = "tmt.cli:main"

@@ -1,0 +1,9 @@
+include AGENTS.md
+include CHANGELOG.md
+include DESIGN.md
+include Makefile
+include tmt.json
+recursive-include tests *.py
+recursive-include tools *
+recursive-include schemas *.json
+recursive-include docs *.md

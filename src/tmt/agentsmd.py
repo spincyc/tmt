@@ -8,9 +8,11 @@ between owned marker lines, written idempotently by ``tmt agents
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
+from tmt import paths
 from tmt.registry import TmtError
 
 FRAGMENT_VERSION = 1
@@ -25,11 +27,17 @@ FRAGMENT_MAX_WORDS = 50
 AGENTS_FILENAME = "AGENTS.md"
 BEGIN_MARKER = f"<!-- tmt:agents v{FRAGMENT_VERSION} -->"
 END_MARKER = "<!-- /tmt:agents -->"
-_BEGIN_PREFIX = "<!-- tmt:agents"
+# Only a versioned begin marker owns a block: prose such as
+# `<!-- tmt:agents-example -->` must never claim the content below it.
+_BEGIN_RE = re.compile(r"<!-- tmt:agents v(\d+) -->")
 
 STALE_FAILURE = "AGENTS.md tmt fragment is stale; run `tmt agents --write`"
 MALFORMED_FAILURE = (
     "AGENTS.md tmt block is malformed: begin marker without end marker"
+)
+DUPLICATE_FAILURE = (
+    "AGENTS.md has more than one tmt block; keep exactly one and delete "
+    "the rest"
 )
 
 
@@ -38,16 +46,83 @@ def render_block() -> str:
     return f"{BEGIN_MARKER}\n{FRAGMENT}\n{END_MARKER}"
 
 
+def _begins(lines: list[str]) -> list[int]:
+    return [
+        index
+        for index, line in enumerate(lines)
+        if _BEGIN_RE.fullmatch(line.strip())
+    ]
+
+
 def _locate(lines: list[str]) -> tuple[int, int | None] | None:
     """(begin, end) line indexes of the marker block; end ``None`` when the
     begin marker has no matching end marker; ``None`` when absent."""
-    for index, line in enumerate(lines):
-        if line.startswith(_BEGIN_PREFIX):
-            for later in range(index + 1, len(lines)):
-                if lines[later] == END_MARKER:
-                    return index, later
-            return index, None
-    return None
+    begins = _begins(lines)
+    if not begins:
+        return None
+    index = begins[0]
+    for later in range(index + 1, len(lines)):
+        if lines[later].strip() == END_MARKER:
+            return index, later
+    return index, None
+
+
+def _read_text(path: Path) -> str:
+    """The file's exact bytes decoded, line terminators untranslated."""
+    try:
+        with open(path, encoding="utf-8", newline="") as handle:
+            return handle.read()
+    except UnicodeDecodeError as error:
+        raise TmtError(
+            "check-failed", f"{path} is not valid UTF-8: {error}"
+        ) from error
+    except OSError as error:
+        raise TmtError("io-error", f"{path}: {error}") from error
+
+
+def _read_lines(path: Path) -> tuple[list[str], str]:
+    """Physical lines without terminators, plus the file's line ending."""
+    text = _read_text(path)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    return [line.removesuffix("\r") for line in text.split("\n")], newline
+
+
+def _splice(text: str, block: str) -> str | None:
+    """``text`` with the owned block replaced, everything else byte-exact.
+
+    Only the block's own lines are rewritten, and each keeps the
+    terminator it already had, so a CRLF or mixed-ending file survives.
+    ``None`` when no begin marker is present.
+    """
+    physical = text.splitlines(keepends=True)
+    begin = next(
+        (
+            index
+            for index, line in enumerate(physical)
+            if _BEGIN_RE.fullmatch(line.strip())
+        ),
+        None,
+    )
+    if begin is None:
+        return None
+    end = next(
+        (
+            index
+            for index in range(begin + 1, len(physical))
+            if physical[index].strip() == END_MARKER
+        ),
+        None,
+    )
+    if end is None:
+        return None
+    newline = "\r\n" if physical[begin].endswith("\r\n") else "\n"
+    terminator = ""
+    for suffix in ("\r\n", "\n"):
+        if physical[end].endswith(suffix):
+            terminator = suffix
+            break
+    rendered = newline.join(block.split("\n")) + terminator
+    return "".join([*physical[:begin], rendered, *physical[end + 1:]])
 
 
 def status(root: Path) -> dict[str, Any]:
@@ -61,7 +136,10 @@ def status(root: Path) -> dict[str, Any]:
     if not path.is_file():
         result["status"] = "no-agents-file"
         return result
-    lines = path.read_text(encoding="utf-8").split("\n")
+    lines, _ = _read_lines(path)
+    if len(_begins(lines)) > 1:
+        result["status"] = "stale"  # duplicate blocks need manual repair
+        return result
     location = _locate(lines)
     if location is None:
         result["status"] = "absent"
@@ -78,6 +156,7 @@ def status(root: Path) -> dict[str, Any]:
 def write(root: Path) -> dict[str, Any]:
     """Create AGENTS.md or idempotently insert/replace the marker block."""
     path = root / AGENTS_FILENAME
+    paths.resolve_within(root, path, label=AGENTS_FILENAME)
     block = render_block()
     result: dict[str, Any] = {
         "fragment_version": FRAGMENT_VERSION,
@@ -85,18 +164,22 @@ def write(root: Path) -> dict[str, Any]:
         "status": "installed",
     }
     if not path.is_file():
-        path.write_text(block + "\n", encoding="utf-8")
+        paths.write_atomic(path, block + "\n")
         return {**result, "changed": True, "previous": "no-agents-file"}
-    text = path.read_text(encoding="utf-8")
-    lines = text.split("\n")
+    lines, newline = _read_lines(path)
+    if len(_begins(lines)) > 1:
+        raise TmtError(
+            "check-failed",
+            f"{path}: {DUPLICATE_FAILURE}",
+        )
     location = _locate(lines)
     if location is None:
-        if text == "":
-            updated = block + "\n"
+        if lines == [""]:
+            updated = [*block.split("\n"), ""]
         else:
-            body = text if text.endswith("\n") else text + "\n"
-            updated = f"{body}\n{block}\n"
-        path.write_text(updated, encoding="utf-8")
+            body = lines if lines[-1] == "" else [*lines, ""]
+            updated = [*body, *block.split("\n"), ""]
+        paths.write_atomic(path, newline.join(updated))
         return {**result, "changed": True, "previous": "absent"}
     begin, end = location
     if end is None:
@@ -107,8 +190,14 @@ def write(root: Path) -> dict[str, Any]:
         )
     if "\n".join(lines[begin : end + 1]) == block:
         return {**result, "changed": False, "previous": "installed"}
-    lines[begin : end + 1] = block.split("\n")
-    path.write_text("\n".join(lines), encoding="utf-8")
+    spliced = _splice(_read_text(path), block)
+    if spliced is None:
+        raise TmtError(
+            "check-failed",
+            f"{path}: tmt block could not be located for replacement; "
+            "repair the block by hand",
+        )
+    paths.write_atomic(path, spliced)
     return {**result, "changed": True, "previous": "stale"}
 
 
@@ -122,9 +211,11 @@ def check_failures(root: Path) -> list[str]:
     if not path.is_file():
         return []
     try:
-        lines = path.read_text(encoding="utf-8").split("\n")
-    except UnicodeDecodeError:
+        lines, _ = _read_lines(path)
+    except TmtError:
         return []
+    if len(_begins(lines)) > 1:
+        return [DUPLICATE_FAILURE]
     location = _locate(lines)
     if location is None:
         return []

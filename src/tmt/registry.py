@@ -14,11 +14,14 @@ from typing import Any
 REGISTRY_FILENAME = "tmt.json"
 REGISTRY_VERSION = 1
 ID_PATTERN = "^[a-z0-9][a-z0-9-]*$"
+ID_MAX_CHARS = 64
 STAGES = ("draft", "stable")
 PURPOSE_MAX_CHARS = 80
 
-_ID_RE = re.compile(ID_PATTERN)
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# fullmatch, not match: `$` also matches before a trailing newline, which
+# would admit an id carrying one into filenames and session context.
+_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 ENTRY_DEFAULTS: dict[str, Any] = {
     "config": (),
@@ -44,7 +47,11 @@ class TmtError(Exception):
 
 
 def valid_id(tool_id: object) -> bool:
-    return isinstance(tool_id, str) and _ID_RE.match(tool_id) is not None
+    return (
+        isinstance(tool_id, str)
+        and len(tool_id) <= ID_MAX_CHARS
+        and _ID_RE.fullmatch(tool_id) is not None
+    )
 
 
 def find_root(start: Path | None = None) -> Path | None:
@@ -90,7 +97,12 @@ def validate(data: Any) -> list[str]:
         return errors
     for tool_id in sorted(tools):
         prefix = f"tools[{tool_id!r}]"
-        if not valid_id(tool_id):
+        if isinstance(tool_id, str) and len(tool_id) > ID_MAX_CHARS:
+            errors.append(
+                f"{prefix}: tool id is {len(tool_id)} characters; the cap "
+                f"is {ID_MAX_CHARS}"
+            )
+        elif not valid_id(tool_id):
             errors.append(f"{prefix}: tool id must match {ID_PATTERN}")
         entry = tools[tool_id]
         if not isinstance(entry, dict):
@@ -200,7 +212,7 @@ def _validate_origin(prefix: str, origin: Any) -> list[str]:
         ):
             errors.append(f"{prefix}.origin.{key}: must be a nonempty string")
     sha256 = origin.get("sha256")
-    if isinstance(sha256, str) and sha256 and not _SHA256_RE.match(sha256):
+    if isinstance(sha256, str) and sha256 and not _SHA256_RE.fullmatch(sha256):
         errors.append(
             f"{prefix}.origin.sha256: must be 64 lowercase hex characters"
         )
@@ -216,6 +228,12 @@ def load(root: Path) -> dict[str, Any]:
         raise TmtError(
             "no-registry", f"{path} does not exist; run tmt init"
         ) from None
+    except UnicodeDecodeError as error:
+        raise TmtError(
+            "check-failed", f"tmt.json is not valid UTF-8: {error}"
+        ) from error
+    except OSError as error:
+        raise TmtError("io-error", f"{path}: {error}") from error
     try:
         data = json.loads(text)
     except json.JSONDecodeError as error:
@@ -232,10 +250,17 @@ def load(root: Path) -> dict[str, Any]:
 
 
 def save(root: Path, data: dict[str, Any]) -> None:
-    """Serialize per contract: key-sorted, 2-space indent, trailing newline."""
-    (root / REGISTRY_FILENAME).write_text(
-        json.dumps(data, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    """Serialize per contract: key-sorted, 2-space indent, trailing newline.
+
+    The write is staged and renamed, so an interrupted save never leaves a
+    truncated committed registry.
+    """
+    from tmt import paths
+
+    path = root / REGISTRY_FILENAME
+    paths.resolve_within(root, path, label="registry")
+    paths.write_atomic(
+        path, json.dumps(data, indent=2, sort_keys=True) + "\n"
     )
 
 

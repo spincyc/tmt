@@ -24,6 +24,16 @@ over unchanged. Both source and destination must already be tmt-enabled
 (`no-registry` otherwise); the moved tool must be registered and present in
 the source (`not-found` otherwise).
 
+Copying is contained in both repositories. The source `tools/<id>` and each
+companion must resolve inside the source repository, and the destination
+`tools/` directory must resolve inside the destination repository; anything
+resolving outside is refused with `containment` (exit 3) instead of followed.
+Without that rule an untrusted repository could register a symlink and have
+tmt copy an arbitrary local file into your registry, staged for commit. Every
+source — the executable and each companion — is resolved and checked before
+the first byte is written, so a refusal copies nothing at all rather than
+leaving a half-copied tool for `tmt check` to report.
+
 Files listed in the entry's `config` are **not** copied — config is
 repo-specific by nature. When the entry declares any, both commands remind
 the consumer instead: the human output gains a
@@ -54,6 +64,16 @@ Copies `ID` from `SOURCE_REPO` into the current repo. An existing local copy
 and entry are overwritten: re-vendoring is the deliberate way to take the
 source's newer version, discarding local divergence.
 
+Two refusals apply before the entry is written:
+
+| Finding | Rule |
+|---|---|
+| Unvendored dependency | Every `requires` id must already be registered in this repo — vendor dependencies first, leaves before roots (`portability`, exit 3), checked before anything is copied |
+| Escaping source file | `tools/ID` and its companions must resolve inside `SOURCE_REPO` (`containment`, exit 3) |
+
+The dependency rule mirrors `adopt`'s: a copy whose siblings are missing is
+broken on arrival, and `tmt check` would fail the moment it lands.
+
 ## adopt (copy out)
 
 ```text
@@ -70,9 +90,10 @@ Refuses a non-stable tool, then runs the portability lint; either is
 | Hardcoded repo path | Tool body must not contain this repo's own absolute path |
 | Unpromoted dependency | Every `requires` id must already be registered in the destination — adopt dependencies first, leaves before roots |
 
-The lint is textual and applies to the executable body only. Adoption does
-not modify the source repo; the destination's human approves the promotion
-by committing it.
+The lint is textual and applies to the executable body only. A source file
+resolving outside this repository is refused separately with `containment`
+(exit 3). Adoption does not modify the source repo; the destination's human
+approves the promotion by committing it.
 
 ## Drift and forking
 

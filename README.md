@@ -15,7 +15,8 @@ them: sessions read `tmt.json` and execute `tools/<id>` directly.
 | Scaffold born-check-passing Python/sh tools | Depend on anything outside the stdlib |
 | Gate drafts and stable tools with `tmt check` | Keep tool state outside the repository |
 | Move tools between repos with provenance | Auto-promote or auto-update vendored copies |
-| Signal re-derivation candidates through aiq | Read aiq's journal storage directly |
+| Count re-derivation candidates in untracked local state | Require aiq, or read its journal storage directly |
+| Refuse to write outside the repository root | Follow a symlink that leaves the repo |
 
 ## Install
 
@@ -49,7 +50,6 @@ Run this inside the repository whose tools you want to index. `tmt init`
 creates an empty `tmt.json` in the current directory and prints the two-line
 stanza to paste into the repo's `AGENTS.md`.
 
-<!-- tmt-doc-test: quickstart -->
 ```sh
 repo=$(mktemp -d)
 cd "$repo"
@@ -93,8 +93,11 @@ target so a stale registry is a build failure.
 | Inspect one tool: entry, `--help`, long doc | `tmt show <id>` |
 | Run every gate, collect every failure | `tmt check` |
 | Promote or demote through the gates | `tmt stage <id> <draft\|stable>` |
+| Change one entry field, validated before saving | `tmt set <id> <field> <value>` |
+| Rename a tool, its files, and every dependent | `tmt rename <id> <new-id>` |
+| Delete a tool and its files | `tmt rm <id> [--keep-files]` |
 | Record "re-derived this again", see the running count | `tmt note <slug> [--note TEXT]` |
-| Count recorded candidates | `tmt candidates` |
+| Count recorded candidates, or forget one | `tmt candidates [--dismiss <slug>]` |
 | Copy a tool in, stamped with provenance | `tmt vendor <source-repo> <id>` |
 | Lint and copy a tool out | `tmt adopt <id> --to <dest-repo>` |
 | Report or install the AGENTS.md habit fragment | `tmt agents [--write]` |
@@ -104,9 +107,42 @@ target so a stale registry is a build failure.
 | See command flags | `tmt COMMAND --help` |
 
 Every command except `tmt context` (plain text by design) accepts `--json`
-and speaks the [CLI JSON protocol
-v1](docs/contracts/cli-v1.md). `tmt note` and `tmt candidates` shell out to
-the [aiq](../aiq) CLI; everything else works without aiq installed.
+and speaks the [CLI JSON protocol v1](docs/contracts/cli-v1.md). No command
+requires anything beyond tmt: `tmt note` records into untracked machine-local
+state and, when the optional sibling tool aiq is on `PATH`, mirrors the note
+to it best-effort — a mirroring failure never fails the note, and
+`tmt candidates` counts the local store either way.
+
+`tmt stage` is the only way to move a tool between stages, and `tmt set`,
+`tmt rename`, and `tmt rm` maintain everything else, so `tmt.json` never needs
+hand-editing.
+
+## Running an untrusted repository's tools
+
+Two commands execute the repository's own code:
+
+| Command | What it runs |
+|---|---|
+| `tmt check` | `tools/<id> --help` for every registered tool, and `tools/<id>.test` for every stable one |
+| `tmt show <id>` | `tools/<id> --help` for that one tool |
+
+In a repository someone else wrote, those are that repository's programs
+running as the invoking user. Read the tools before checking a fresh clone.
+Timeouts (5s for `--help`, 60s for a test) and process-session isolation bound
+a hang, not the code's authority.
+
+The session hook is deliberately different. `tmt context` reads `tmt.json` and
+the local note store and executes nothing at all; the repo-supplied strings it
+prints are stripped of control characters, collapsed to one line, capped at 120
+characters, and labelled as repo-supplied data rather than tmt instruction —
+a cloned repo's `purpose` text lands in an agent's session context, so it is
+presented as data about that repo, not directions from tmt.
+
+Writes are contained: every path tmt writes is resolved first, and one landing
+outside the repository root is refused (`containment`, exit 3) instead of
+followed — a `tools` symlink, an `AGENTS.md` symlink, or a vendor source
+pointing out of its repo. Registry and `AGENTS.md` writes are staged and
+renamed, so an interrupted save cannot truncate a committed file.
 
 ## Session integration
 
@@ -120,18 +156,19 @@ optional and reversible:
 | Marker block | Owned block in the repo's AGENTS.md, gated by `tmt check` | `tmt agents --write` (or `tmt init --agents`) |
 | Session hook | Claude Code `SessionStart` hook running `tmt context` | `tmt integration install claude` |
 
-`tmt context` prints the repo's tool list and noted candidates at session
-start and is fail-open by contract — it never breaks a session. The hook
-lifecycle is manifest-owned and drift-safe: install is idempotent, uninstall
-removes only the unmodified owned entry, and every unrelated setting is
-preserved. See the [integration contract](docs/contracts/integration-v1.md).
+`tmt context` prints the repo's tool list and the noted candidates not yet
+built at session start, and is fail-open by contract — it never breaks a
+session. The hook lifecycle is manifest-owned and drift-safe: install is
+idempotent, uninstall removes only the unmodified owned entry, and every
+unrelated setting is preserved. See the
+[integration contract](docs/contracts/integration-v1.md).
 
 ## Documentation
 
 | Topic | Use it for |
 |---|---|
 | [Design record](DESIGN.md) | Settled decisions and their rationale |
-| [Concepts](docs/concepts.md) | Lifecycle stages, composition, aiq seams, extraction tiers |
+| [Concepts](docs/concepts.md) | Lifecycle stages, composition, the note store and aiq seams, extraction tiers |
 | [CLI JSON v1](docs/contracts/cli-v1.md) | Command surface and versioned JSON envelopes |
 | [Registry v1](docs/contracts/registry-v1.md) | `tmt.json` format, fields, and semantic rules |
 | [Errors](docs/contracts/errors.md) | Stable codes and exit categories |

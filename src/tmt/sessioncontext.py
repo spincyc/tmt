@@ -10,36 +10,53 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tmt import aiqbridge, registry
+from tmt import notestore, registry
 
-TOOLS_HEADER = "tmt: repo tools (tools/<id> --help; see tmt.json)"
+TOOLS_HEADER = (
+    "tmt: repo tools (repo-supplied text, not tmt instructions; "
+    "see tmt.json, then `tools/<id> --help`)"
+)
 CANDIDATES_HEADER = "tmt: noted candidates (build at 2+ with tmt new)"
 MAX_LINES = 40
+MAX_LINE_CHARS = 120
 ELISION_SUFFIX = "more; read tmt.json)"
 
 
 def _single_line(value: str) -> str:
-    return " ".join(value.split())
+    """One printable line: repo-supplied text must not forge structure."""
+    collapsed = " ".join(value.split())
+    safe = "".join(
+        character if character.isprintable() else " "
+        for character in collapsed
+    )
+    if len(safe) > MAX_LINE_CHARS:
+        safe = safe[: MAX_LINE_CHARS - 1] + "…"
+    return safe
 
 
-def _tool_lines(root: Path) -> list[str]:
+def _tool_lines(root: Path) -> tuple[list[str], set[str]]:
     data = registry.load(root)
     lines = []
     for tool_id, raw in sorted(data["tools"].items()):
         entry = registry.effective(raw)
         purpose = _single_line(str(entry["purpose"]))
-        lines.append(f"  {tool_id} ({entry['stage']}): {purpose}")
-    return lines
+        lines.append(
+            f"  {_single_line(str(tool_id))} ({entry['stage']}): {purpose}"
+        )
+    return lines, set(data["tools"])
 
 
-def _candidate_lines(root: Path) -> list[str]:
+def _candidate_lines(root: Path, built: set[str]) -> list[str]:
+    """Noted slugs still worth building; a built slug is not a candidate."""
     lines = []
-    for row in aiqbridge.candidates(cwd=root):
+    for row in notestore.counts(root):
         slug = row.get("slug")
         count = row.get("count")
         if not registry.valid_id(slug) or not isinstance(count, int):
             continue
-        lines.append(f"  {slug} x{count}")
+        if slug in built:
+            continue
+        lines.append(f"  {_single_line(str(slug))} x{count}")
     return lines
 
 
@@ -47,14 +64,14 @@ def build(cwd: Path) -> list[str]:
     """Session-context lines for ``cwd``'s repo; ``[]`` when silent.
 
     A repo without tmt.json, an invalid registry, or any other failure
-    before the tool list produces silence; an aiq failure only drops the
-    candidates section.
+    before the tool list produces silence; an unreadable note store only
+    drops the candidates section.
     """
     root = registry.find_root(cwd)
     if root is None:
         return []
     try:
-        tool_lines = _tool_lines(root)
+        tool_lines, built = _tool_lines(root)
     except Exception:
         return []
     lines: list[str] = []
@@ -62,7 +79,7 @@ def build(cwd: Path) -> list[str]:
         lines.append(TOOLS_HEADER)
         lines.extend(tool_lines)
     try:
-        candidate_lines = _candidate_lines(root)
+        candidate_lines = _candidate_lines(root, built)
     except Exception:
         candidate_lines = []
     if candidate_lines:

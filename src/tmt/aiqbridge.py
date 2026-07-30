@@ -1,10 +1,11 @@
-"""Bridge to aiq through its CLI only.
+"""Mirror candidate notes to aiq through its CLI only.
 
 tmt never reads aiq's SQLite journal and never imports aiq modules; the
 journal schema is declared internal. Candidate events use the canonical
 provider-neutral v1 envelope from aiq docs/integrations/generic.md, with
-``source: "tmt"`` plus a ``"kind": "tmt-note"`` content marker so
-``tmt candidates`` can filter them back out of ``aiq inbox list --json``.
+``source: "tmt"`` plus a ``"kind": "tmt-note"`` content marker so a
+reader can filter them back out of ``aiq inbox list --json``. Counting
+lives in ``tmt.notestore``: the loop must not require aiq.
 """
 
 from __future__ import annotations
@@ -20,8 +21,7 @@ from tmt.registry import TmtError
 
 SOURCE = "tmt"
 NOTE_KIND = "tmt-note"
-_TIMEOUT_SECONDS = 30
-_CANDIDATE_SCAN_LIMIT = 1000
+_TIMEOUT_SECONDS = 5
 
 
 def _run(
@@ -101,68 +101,3 @@ def note(slug: str, note_text: str | None, *, cwd: Path) -> dict[str, Any]:
         "created": result.get("created"),
         "message_id": result.get("message_id"),
     }
-
-
-def candidates(*, cwd: Path) -> list[dict[str, Any]]:
-    """Group and count tmt-note events from ``aiq inbox list --json``."""
-    stdout = _run(
-        [
-            "inbox",
-            "list",
-            "--json",
-            "--include-content",
-            "--limit",
-            str(_CANDIDATE_SCAN_LIMIT),
-        ],
-        cwd=cwd,
-    )
-    result = _parse(stdout, command="inbox list")
-    groups: dict[str, dict[str, Any]] = {}
-    for message in result.get("messages") or []:
-        payload = _note_payload(message)
-        if payload is None:
-            continue
-        slug, note_text = payload
-        group = groups.setdefault(
-            slug, {"count": 0, "notes": [], "slug": slug}
-        )
-        group["count"] += 1
-        if note_text:
-            group["notes"].append(note_text)
-    return sorted(
-        groups.values(), key=lambda group: (-group["count"], group["slug"])
-    )
-
-
-def slug_count(slug: str, *, cwd: Path) -> int | None:
-    """This slug's note count via the candidates machinery, or ``None``
-    when counting fails or the slug has not surfaced yet. Never raises:
-    a count problem must not fail an already-successful note."""
-    try:
-        rows = candidates(cwd=cwd)
-    except TmtError:
-        return None
-    for row in rows:
-        if row["slug"] == slug:
-            count = row["count"]
-            return count if isinstance(count, int) else None
-    return None
-
-
-def _note_payload(message: Any) -> tuple[str, str | None] | None:
-    if not isinstance(message, dict) or message.get("source") != SOURCE:
-        return None
-    content = message.get("content")
-    if not isinstance(content, str):
-        return None
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict) or payload.get("kind") != NOTE_KIND:
-        return None
-    slug = payload.get("slug")
-    if not isinstance(slug, str) or not slug:
-        return None
-    note_text = payload.get("note")
-    return slug, note_text if isinstance(note_text, str) else None

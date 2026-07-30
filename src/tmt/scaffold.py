@@ -6,7 +6,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from tmt import registry
+from tmt import paths, registry
 from tmt.registry import TmtError
 
 LANGS = ("python", "sh")
@@ -25,8 +25,7 @@ AGENTS_STANZA = (
 def init(directory: Path) -> Path:
     """Create an empty tmt.json in ``directory``."""
     path = directory / registry.REGISTRY_FILENAME
-    if path.exists():
-        raise TmtError("already-exists", f"{path} already exists")
+    paths.refuse_existing(path)
     registry.save(directory, {"tools": {}, "v": registry.REGISTRY_VERSION})
     return path
 
@@ -102,8 +101,9 @@ def new(
             f"tool {tool_id!r} is already registered in tmt.json",
         )
     path = registry.tool_path(root, tool_id)
-    if path.exists():
-        raise TmtError("already-exists", f"{path} already exists")
+    paths.refuse_existing(path)
+    test_path = path.with_name(f"{tool_id}.test")
+    paths.refuse_existing(test_path)
     if purpose is not None:
         purpose = _single_line(purpose)
         if len(purpose) > registry.PURPOSE_MAX_CHARS:
@@ -117,12 +117,16 @@ def new(
     usage = (
         _single_line(usage) if usage is not None else f"tools/{tool_id} [--json]"
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_render(lang, tool_id, purpose, usage), encoding="utf-8")
-    path.chmod(0o755)
-    test_path = path.with_name(f"{tool_id}.test")
-    test_path.write_text(render_test(tool_id), encoding="utf-8")
-    test_path.chmod(0o755)
+    paths.resolve_within(root, path.parent, label="tools directory")
+    paths.make_directory(path.parent)
+    paths.write_new(
+        path,
+        _render(lang, tool_id, purpose, usage),
+        mode=paths.EXECUTABLE_FILE_MODE,
+    )
+    paths.write_new(
+        test_path, render_test(tool_id), mode=paths.EXECUTABLE_FILE_MODE
+    )
     entry: dict[str, Any] = {
         "idempotent": True,
         "json": True,

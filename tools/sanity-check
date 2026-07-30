@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
 
+for argument in "$@"; do
+  case $argument in
+    -h | --help)
+      printf 'Confirm the required commands and Python version are present.\n'
+      printf 'usage: tools/sanity-check [--help]\n'
+      exit 0
+      ;;
+  esac
+done
+
 missing_commands=
 
 check_command() {

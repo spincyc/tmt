@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from tmt import paths
 from tmt.registry import TmtError
 
 MANIFEST_VERSION = 1
@@ -125,14 +126,19 @@ def _groups(path: Path, document: dict[str, Any]) -> list[Any]:
 
 
 def _write_settings(path: Path, document: dict[str, Any]) -> None:
-    """Re-serialize preserving key order; the only permitted byte change."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    staging = path.with_name(path.name + ".tmt-tmp")
-    staging.write_text(
+    """Re-serialize preserving key order; the only permitted byte change.
+
+    The write lands on the resolved path so a symlinked settings.json
+    (dotfiles) keeps its link, and inherits the existing file's mode
+    (0600 when tmt creates it) so secrets are never exposed."""
+    paths.make_directory(path.parent)
+    target = path.resolve()
+    mode = None if target.exists() else 0o600
+    paths.write_atomic(
+        target,
         json.dumps(document, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+        mode=mode,
     )
-    os.replace(staging, path)
 
 
 def _load_manifest(path: Path) -> dict[str, Any] | None:
@@ -158,6 +164,7 @@ def _load_manifest(path: Path) -> dict[str, Any] | None:
         )
     if (
         not isinstance(data["entry"], dict)
+        or not isinstance(data["settings"], str)
         or not isinstance(data["created_file"], bool)
         or not isinstance(data["created_containers"], list)
     ):
@@ -166,15 +173,52 @@ def _load_manifest(path: Path) -> dict[str, Any] | None:
 
 
 def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    staging = path.with_name(path.name + ".tmt-tmp")
-    staging.write_text(
+    paths.make_directory(path.parent)
+    paths.write_atomic(
+        path,
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
         + "\n",
-        encoding="utf-8",
+        mode=0o600,
     )
-    staging.chmod(0o600)
-    os.replace(staging, path)
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    return left == right or left.resolve() == right.resolve()
+
+
+def _managed_settings(manifest: dict[str, Any] | None) -> Path:
+    """The manifest's recorded path wins: it names the file that actually
+    holds the owned entry."""
+    if manifest is None:
+        return settings_path()
+    return Path(manifest["settings"])
+
+
+def _owned_command(command: Any) -> bool:
+    """Whether ``command`` is an equivalent ``tmt context`` invocation."""
+    if not isinstance(command, str):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if len(words) < 2 or words[-1] != "context":
+        return False
+    if Path(words[0]).name == "tmt":
+        return True
+    return "-m" in words[1:-1] and words[words.index("-m") + 1] == "tmt"
+
+
+def _supersedable(group: Any) -> bool:
+    """An unowned SessionStart group install may update in place instead of
+    appending a duplicate beside it."""
+    if not isinstance(group, dict) or group.get("matcher") != MATCHER:
+        return False
+    hooks = group.get(_HOOKS_KEY)
+    if not isinstance(hooks, list) or len(hooks) != 1:
+        return False
+    hook = hooks[0]
+    return isinstance(hook, dict) and _owned_command(hook.get("command"))
 
 
 def _drift_error(settings: Path) -> TmtError:
@@ -187,11 +231,33 @@ def _drift_error(settings: Path) -> TmtError:
     )
 
 
+def _mismatch_error(recorded: Path, derived: Path) -> TmtError:
+    return TmtError(
+        "drift",
+        f"the ownership manifest {manifest_path()} records the managed "
+        f"settings file {recorded}, but this environment resolves to "
+        f"{derived}; the owned entry lives in the recorded file — point "
+        f"{SETTINGS_ENV} back at it (or unset it) and rerun, uninstalling "
+        "there before you move the hook",
+    )
+
+
 def _assess() -> dict[str, Any]:
     """Shared state read for plan and install (no mutation)."""
-    settings = settings_path()
     desired = hook_entry()
     manifest = _load_manifest(manifest_path())
+    settings = _managed_settings(manifest)
+    mismatch = not _same_file(settings, settings_path())
+    if mismatch:
+        return {
+            "desired": desired,
+            "document": {},
+            "groups": [],
+            "manifest": manifest,
+            "mismatch": True,
+            "settings": settings,
+            "state": "drift",
+        }
     document = _load_settings(settings)
     groups = _groups(settings, document)
     state: str
@@ -207,6 +273,7 @@ def _assess() -> dict[str, Any]:
         "document": document,
         "groups": groups,
         "manifest": manifest,
+        "mismatch": False,
         "settings": settings,
         "state": state,
     }
@@ -219,6 +286,9 @@ def plan() -> dict[str, Any]:
     return {
         "changed": state in ("install", "update"),
         "entry": assessment["desired"],
+        # Both an edited entry and a settings-path mismatch report drift;
+        # only this flag tells a reader which one it is.
+        "mismatch": assessment["mismatch"],
         "settings": str(assessment["settings"]),
         "status": state,
     }
@@ -232,6 +302,8 @@ def install() -> dict[str, Any]:
     document = assessment["document"]
     state = assessment["state"]
     manifest = assessment["manifest"]
+    if assessment["mismatch"]:
+        raise _mismatch_error(settings, settings_path())
     if state == "drift":
         raise _drift_error(settings)
     changed = False
@@ -241,13 +313,21 @@ def install() -> dict[str, Any]:
     ) if manifest else []
     if state == "install":
         created_file = not settings.is_file()
-        if _HOOKS_KEY not in document:
-            document[_HOOKS_KEY] = {}
-            created_containers.append(_HOOKS_KEY)
-        if _EVENT_KEY not in document[_HOOKS_KEY]:
-            document[_HOOKS_KEY][_EVENT_KEY] = []
-            created_containers.append(f"{_HOOKS_KEY}.{_EVENT_KEY}")
-        document[_HOOKS_KEY][_EVENT_KEY].append(desired)
+        groups = assessment["groups"]
+        stale = next(
+            (i for i, group in enumerate(groups) if _supersedable(group)),
+            None,
+        )
+        if stale is not None:
+            groups[stale] = desired
+        else:
+            if _HOOKS_KEY not in document:
+                document[_HOOKS_KEY] = {}
+                created_containers.append(_HOOKS_KEY)
+            if _EVENT_KEY not in document[_HOOKS_KEY]:
+                document[_HOOKS_KEY][_EVENT_KEY] = []
+                created_containers.append(f"{_HOOKS_KEY}.{_EVENT_KEY}")
+            document[_HOOKS_KEY][_EVENT_KEY].append(desired)
         _write_settings(settings, document)
         changed = True
     elif state == "update":
@@ -281,34 +361,45 @@ def install() -> dict[str, Any]:
 
 
 def check() -> dict[str, Any]:
-    """Report ok | absent | drifted without mutating anything."""
-    settings = settings_path()
-    result = {"settings": str(settings), "status": "absent"}
-    manifest = _load_manifest(manifest_path())
+    """Report ok | absent | drifted without mutating anything.
+
+    Never raises: an unreadable manifest or settings file is drift, which
+    the contract reports on stdout, not an error envelope."""
+    derived = settings_path()
+    try:
+        manifest = _load_manifest(manifest_path())
+    except TmtError:
+        return {"settings": str(derived), "status": "drifted"}
     if manifest is None:
+        return {"settings": str(derived), "status": "absent"}
+    settings = _managed_settings(manifest)
+    result = {"settings": str(settings), "status": "drifted"}
+    if not _same_file(settings, derived):
         return result
     try:
         document = _load_settings(settings)
         groups = _groups(settings, document)
     except TmtError:
-        return {**result, "status": "drifted"}
+        return result
     if any(_equal(group, manifest["entry"]) for group in groups):
         return {**result, "status": "ok"}
-    return {**result, "status": "drifted"}
+    return result
 
 
 def uninstall() -> dict[str, Any]:
     """Remove only the byte-identical owned entry; refuse on drift."""
-    settings = settings_path()
+    manifest = _load_manifest(manifest_path())
+    settings = _managed_settings(manifest)
     result: dict[str, Any] = {
         "changed": False,
         "removed": False,
         "settings": str(settings),
         "status": "uninstalled",
     }
-    manifest = _load_manifest(manifest_path())
     if manifest is None:
         return result
+    if not _same_file(settings, settings_path()):
+        raise _mismatch_error(settings, settings_path())
     owned = manifest["entry"]
     document = _load_settings(settings)
     groups = _groups(settings, document)

@@ -25,6 +25,46 @@ tools). Neither requires the other. Seams:
 | Contracts | tmt adopts aiq cli-v1 wholesale: `--json` emits one compact key-sorted object with `"v":1`; errors `{"code","error","status":"error","v":1}` on stderr; stable codes + exit categories. One protocol across aiq, tmt, and every generated tool. |
 | State placement | Untracked runtime state (if any) under `$(git rev-parse --git-common-dir)/tmt/`, aiq resolve_scope precedent. |
 
+### Amendment 2026-07-29: the note store is local; aiq is the mirror
+
+Original decision: candidate events lived only in aiq, and `tmt candidates`
+read them back out of aiq's inbox. An audit showed the cost: with no aiq on
+PATH, `tmt note` — the loop's opening move and the habit the whole design
+exists to build — failed with `aiq-unavailable`, so a stranger's first
+contact with the central idea was an error. aiq has no public release, and
+the README installs only tmt.
+
+Superseding decision: notes are recorded in untracked machine-local state
+under `$(git rev-parse --git-common-dir)/tmt/notes.jsonl` (the state
+placement already reserved above; `.tmt/` outside a git work tree), and
+that store is what counting reads. aiq remains the optional upgrade: each
+note is still mirrored to `aiq ingest` when aiq is present, and a mirroring
+failure never fails the note. The sibling-with-seams decision is unchanged
+in substance — neither system requires the other — but the direction of the
+dependency is now honest, and the git-dir lookup runs without a subprocess
+so the fail-open session hook cannot hang or depend on PATH.
+
+Reconciliation came with it: a slug that is already a registered tool is
+not a candidate. `tmt note` on such a slug reports that it is built instead
+of recording another nudge, `tmt candidates` marks built slugs, and session
+context omits them — otherwise the ambient layer degrades into standing
+noise about work already done.
+
+### Amendment 2026-07-29: containment before convenience
+
+A symlink is not a licence to leave the repository. Every write path
+resolves its target and refuses one landing outside the repository root
+(`containment`, exit 3), and `tmt vendor` refuses a source tool that
+resolves outside its source repo — an untrusted repository could otherwise
+have tmt copy an arbitrary local file into your registry and stage it for
+commit. `tmt.json` and `AGENTS.md` writes are staged and renamed, so an
+interrupted save cannot truncate a committed file, and an in-repo symlink
+survives the write instead of being replaced by a regular file.
+
+Environment failures are no longer reported as tmt defects: unreadable or
+undecodable files raise `io-error` (exit 3) rather than `internal` (exit
+70), which stays reserved for real defects.
+
 ## The registry (decided: one committed file, `tmt.json`)
 
 `tmt.json` at repo root is the single canonical artifact: registry config plus
@@ -126,7 +166,12 @@ console entry `tmt.cli:main`, `make test/verify/ci`, versioned
 AGENTS.md, doc-tested README, Keep-a-Changelog. tmt's repo is itself
 tmt-enabled (dogfood). CLI surface (all commands take `--json`):
 
-`init | new | list | show | check | stage | note | candidates | vendor | adopt`
+`init | new | rm | rename | set | list | show | check | stage | note |
+candidates | vendor | adopt | agents | context | integration`
+
+Every command except `tmt context` (plain text by design) takes `--json`.
+`make test`, `make verify`, and `make sanity-check` are the targets; there
+is no `ci` target — CI runs `make verify` over the supported Python matrix.
 
 Post-drive amendments (2026-07-29, after a full dogfood cycle): `tmt stage`
 is the only sanctioned way to flip a tool's stage (promotion pre-runs the
@@ -141,11 +186,13 @@ AGENTS.md gains two lines pointing at tmt.json and `tmt new`.
 
 ## Open questions
 
-- **Name collision**: `tmt` is taken on PyPI (teemtee's Test Management Tool,
-  packaged in Fedora). Fine for a personal CLI; needs a distribution name
-  (aiq precedent: `aiq-workqueue`) or a rename if ever published.
-- Candidate threshold default (2 events across distinct sessions?) and where
-  it is configured (tmt.json config block?).
+- **Name collision**: settled for distribution — the PyPI name is
+  `tmt-toolmaker` (teemtee's Test Management Tool owns `tmt`). The console
+  script is still `tmt`, which collides on a machine that has teemtee's
+  package installed; unresolved, and worth a decision before a PyPI release.
+- Candidate threshold default (2 notes, currently counted per repository
+  rather than per session) and where it is configured (tmt.json config
+  block?).
 - tmt.json merge conflicts on concurrent branches: sorted keys + one object
   per tool should keep them rare; document `tmt check` as post-merge fixup.
 - Does tmt.json carry repo config beyond `tools` (default lang, caps), or

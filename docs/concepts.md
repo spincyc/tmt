@@ -12,7 +12,7 @@ re-derivation noticed → note → candidates → new (draft) → check → stab
 | Tool (`tools/<id>`) | A pure executable; `--help` always works |
 | Long doc (`tools/<id>.md`) | Optional prose beyond `--help`, surfaced by `tmt show` |
 | Test (`tools/<id>.test`) | Executable that exits 0; scaffolded by `tmt new`, the price of `stable` |
-| Candidate | A recorded "re-derived X again" event, stored by aiq |
+| Candidate | A recorded "re-derived X again" note, kept in untracked machine-local state |
 | Origin stamp | Provenance on a vendored copy: source repo, commit, sha256, remote url when known |
 
 Agents run `tools/<id>` directly. tmt is required to make tools, never to run
@@ -29,7 +29,7 @@ is when composition and extraction start trusting the tool.
 
 | Stage | Cost to enter | `tmt check` enforces |
 |---|---|---|
-| `draft` | `tmt new <id>` + paste the derived logic | registry validity, entry↔file parity, syntax lint, executable bit, `--help` smoke, `requires` resolve, no cycles, declared composition |
+| `draft` | `tmt new <id>` + paste the derived logic | registry validity, entry↔file parity, containment, syntax lint, executable bit, `--help` smoke, `requires` resolve, no cycles, declared composition |
 | `stable` | extend the scaffolded `tools/<id>.test`, run `tmt stage <id> stable` | draft gates + test exits 0 and differs from the unmodified scaffold + no draft dependencies + no hardcoded absolute paths |
 
 Drafts may live indefinitely; the only penalty is exclusion from stable
@@ -79,22 +79,30 @@ when clean). Usage, state, and internal errors keep their cli-v1 categories
 assertion pattern for an expected exit 1:
 `"$tool" ... && exit 1 || test $? = 1`.
 
-## aiq seams
+## The note store, and the aiq seams
 
-tmt and [aiq](../../aiq) are siblings: aiq owns work state (messages, tasks,
-queue, journal); tmt owns durable executable knowledge. Neither requires the
-other, and tmt talks to aiq only through its CLI — never its SQLite journal
-or Python modules, both declared internal.
+Notes live in untracked machine-local state under the repository's git common
+directory — `<git-common-dir>/tmt/notes.jsonl`, or `.tmt/notes.jsonl` outside
+a git work tree. The store is never committed, never shared, and never read by
+anything but tmt, and it is what `tmt candidates` counts — so the loop's
+opening move works in a fresh clone with nothing else installed.
+
+aiq is an optional sibling tool (not publicly released) that owns work state:
+messages, tasks, queue, journal. tmt owns durable executable knowledge.
+Neither requires the other, and tmt talks to aiq only through its CLI — never
+its SQLite journal or Python modules, both declared internal.
 
 | Seam | Mechanism |
 |---|---|
-| Candidate signal | `tmt note <slug>` sends a v1 event envelope to `aiq ingest --event-json -` with `source: "tmt"` and a `"kind": "tmt-note"` content marker |
-| Candidate readout | `tmt candidates` groups and counts those events from `aiq inbox list --json`; tmt stores no events itself |
-| Tool-building as work | Crossing the candidate threshold files an aiq task; building the tool is queued, journaled work |
+| Candidate mirror | When aiq is on `PATH`, `tmt note` also sends a v1 event envelope to `aiq ingest --event-json -` with `source: "tmt"` and a `"kind": "tmt-note"` content marker, so work state sees the signal too |
+| Candidate readout | `tmt candidates` reads tmt's own store; aiq is not consulted, and a slug already registered as a tool is marked `built` rather than counted as work to do |
+| Tool-building as work | Crossing the candidate threshold is worth an aiq task; building the tool is then queued, journaled work |
 | Contracts | tmt adopts aiq [cli-v1](contracts/cli-v1.md) wholesale — one JSON protocol across aiq, tmt, and every generated tool |
 
-aiq missing or failing degrades exactly two commands (`note`, `candidates`)
-to `aiq-unavailable`; everything else still works.
+No tmt command requires aiq. Mirroring is best-effort: aiq missing, failing,
+or slow leaves the note recorded and the count correct, with a null
+`message_id`. Dismiss a candidate that will never be built with
+`tmt candidates --dismiss <slug>`.
 
 ## Forming the habit
 
@@ -113,13 +121,17 @@ re-derive. Each layer is optional and reversible; see the
 
 ## The loop
 
-1. An agent notices re-derivation → `tmt note <slug> --note "context"`.
-2. Recurrence → `tmt candidates` surfaces it; an aiq task is filed.
+1. An agent notices re-derivation → `tmt note <slug> --note "context"`, which
+   records locally and reports the running count.
+2. Recurrence → the count reaches 2, and `tmt candidates` and session context
+   both surface it (an aiq task, when aiq is in use).
 3. `tmt new <id>` scaffolds executable + registry entry, born check-passing;
-   the agent pastes the logic and commits the smallest coherent diff.
+   the agent pastes the logic and commits the smallest coherent diff. The slug
+   stops being a candidate the moment it is registered.
 4. The next session Reads `tmt.json` and runs the tool.
 5. Edge cases are fixed in place (prefer editing over near-duplicates); the
    scaffolded test grows real assertions; `tmt stage <id> stable` promotes.
+   Entry upkeep is `tmt set`, `tmt rename`, and `tmt rm`, never hand-editing.
    Git history is the audit trail.
 
 ## Extraction tiers

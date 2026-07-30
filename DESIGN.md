@@ -195,6 +195,26 @@ Guidance wiring: new `ai-guidance/15-tool-making.md` registered in
 AI_GUIDANCE.md's ordered list (respect the 250-word entry budget); per-repo
 AGENTS.md gains two lines pointing at tmt.json and `tmt new`.
 
+### Amendment 2026-07-30: composition is detected by position, not by word
+
+The undeclared-composition gate matched a sibling id as a bare standalone
+word anywhere in a tool body outside full-line comments. The recorded reason
+for scanning string literals was that path strings legitimately name
+siblings — which is right, but the mechanism was wider than the reason.
+
+New evidence: a tool named after an ordinary word is unusable. The scaffold's
+own text contains `json`, so `tmt new json` failed every other tool in the
+repository, and no `requires` declaration could fix it — the dependency does
+not exist. `list`, `one`, and `check` fail the same way.
+
+The gate now matches an id only in a path position: preceded by `/`, at most a
+quote and whitespace between. That is precisely where the mandated adjacency
+idiom puts it, so `tools/<id>` and both language idioms still match and prose
+does not. This narrows a gate rather than widening one, and the cost is a
+sibling invoked through some other construction going undetected — acceptable,
+because such a construction already violates the composition rule the gate
+exists to enforce.
+
 ## Settled 2026-07-29 (post-audit triage)
 
 Decided with the owner after the audit; each was a live question and none

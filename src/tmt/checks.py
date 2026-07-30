@@ -174,13 +174,22 @@ def portability_findings(root: Path, tool_id: str, tool: Path) -> list[str]:
 
 
 @functools.lru_cache(maxsize=None)
-def _word_pattern(word: str) -> re.Pattern[str]:
-    """``word`` as a standalone-word matcher, compiled once.
+def _sibling_pattern(tool_id: str) -> re.Pattern[str]:
+    """``tool_id`` where the composition idiom would put it: after a slash.
+
+    Composition is by adjacency — ``"$(dirname "$0")/<id>"`` in sh,
+    ``Path(__file__).parent / "<id>"`` in python — so a real invocation
+    always has a slash before the id, with at most a quote and whitespace
+    between. Matching the bare word instead made a tool named after an
+    ordinary word (``json``, ``list``, ``one``) fail against that word in
+    every other tool's prose, which no declaration could fix.
 
     Cached because ``re``'s own cache holds 512 patterns: above that a
     registry rescans every (tool, sibling) pair through a fresh compile.
     """
-    return re.compile(f"(?<![A-Za-z0-9_-]){re.escape(word)}(?![A-Za-z0-9_-])")
+    return re.compile(
+        rf"""/\s*["']?\s*{re.escape(tool_id)}(?![A-Za-z0-9_-])"""
+    )
 
 
 def undeclared_composition(
@@ -188,14 +197,13 @@ def undeclared_composition(
 ) -> list[str]:
     """Sibling tool ids used in the body but absent from ``requires``.
 
-    A registered id counts as used when it appears as a standalone word
-    (no adjacent ``[A-Za-z0-9_-]``), so ids embedded in longer identifiers
-    do not match. Full-line comments — lines whose first non-whitespace
-    character is ``#``, including the shebang — are dropped before
-    scanning, so prose references to sibling tools belong there. Inline
-    comments and string literals are scanned: path strings legitimately
-    contain sibling ids and must keep matching. Undecodable tool bodies
-    are skipped.
+    A registered id counts as used when it appears in a path position —
+    see ``_sibling_pattern`` — so both composition idioms and a plain
+    ``tools/<id>`` match while the id as an ordinary word does not.
+    Full-line comments (first non-whitespace character ``#``, shebang
+    included) are dropped before scanning; inline comments and string
+    literals are scanned, because a path string is how a sibling is
+    normally named. Undecodable tool bodies are skipped.
     """
     try:
         text = tool.read_text(encoding="utf-8")
@@ -211,7 +219,7 @@ def undeclared_composition(
     for other in sorted(tools):
         if other == tool_id or other in declared:
             continue
-        if _word_pattern(other).search(body):
+        if _sibling_pattern(other).search(body):
             failures.append(
                 f"{tool_id}: uses sibling {other!r} without declaring it "
                 "in requires"

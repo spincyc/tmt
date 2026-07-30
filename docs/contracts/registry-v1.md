@@ -91,7 +91,7 @@ collected and reported, never just the first.
 | Executable bit set on `tools/<id>` | all | check |
 | `tools/<id> --help` exits 0 within 5 seconds | all | check |
 | Every `requires` id resolves; no duplicate ids; no dependency cycles | all | validator + check |
-| Undeclared composition: another tool's id appearing as a standalone word in a code line of the body must be in `requires` | all | check |
+| Undeclared composition: another tool's id appearing in a path position in a code line of the body must be in `requires` | all | check |
 | Executable `tools/<id>.test` exists and exits 0 within 60 seconds, run from the repo root | stable | check |
 | `tools/<id>.test` must differ from the unmodified `tmt new` scaffold — write real assertions before promoting | stable | check |
 | Must not `require` a draft tool | stable | check |
@@ -111,19 +111,29 @@ pointing out of the repository is a `tmt check` failure, and every command
 that would write it, copy it, delete it, or rename it refuses with
 `containment` (exit 3) instead of following the link.
 
-Mentioning another registered tool's id in a tool body implies a dependency
-and must be declared in `requires`. The gate reads each body as text
-(undecodable files are skipped) and matches every other registered id as a
-standalone word — no adjacent `[A-Za-z0-9_-]`, so ids embedded in longer
-identifiers do not count. It applies to every stage, because an undeclared
-composition breaks silently the moment the sibling is renamed or removed.
+Invoking another registered tool from a tool body implies a dependency and
+must be declared in `requires`. The gate reads each body as text (undecodable
+files are skipped) and looks for every other registered id **in a path
+position**: preceded by `/`, with at most a quote and whitespace between, and
+not followed by `[A-Za-z0-9_-]`. That is exactly where the mandated adjacency
+idiom puts it — `"$(dirname "$0")/<id>"` in sh, `Path(__file__).parent /
+"<id>"` in python — so `tools/<id>` and both idioms match, while the id
+appearing as an ordinary word does not. It applies to every stage, because an
+undeclared composition breaks silently the moment the sibling is renamed or
+removed.
 
 The gate scans code lines only: full-line comments — lines whose first
 non-whitespace character is `#`, including the shebang — are dropped before
-matching, so prose references to sibling tools ("Sibling doc-budgets
-composes this tool") belong in full-line comments, which are exempt. Inline
-comments and string literals are scanned as code: path strings legitimately
-contain sibling ids and must keep matching.
+matching. Inline comments and string literals *are* scanned, because a path
+string is the normal way to name a sibling; the path-position rule is what
+separates those from prose.
+
+Matching the bare word instead — the rule through 0.1.0a6 — made a tool named
+after an ordinary word unusable: the scaffold's own text contains `json`, so
+`tmt new json` failed every other tool in the repository, and no `requires`
+declaration could fix a dependency that does not exist. The path-position rule
+keeps the reason string literals are scanned at all while dropping that class
+of false positive.
 
 The test-differs-from-scaffold gate compares `tools/<id>.test` byte-for-byte
 against a fresh render of the `tmt new` test template for that id. The

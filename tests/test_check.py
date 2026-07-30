@@ -519,7 +519,13 @@ class CompositionGateTest(TmtTestCase):
 
         self.assertEqual((returncode, failures), (0, []))
 
-    def test_same_sibling_mention_in_a_code_line_still_fails(self) -> None:
+    def test_a_sibling_named_in_prose_is_not_a_call(self) -> None:
+        """Only a path position counts, wherever the words appear.
+
+        Matching the bare word made a tool named after an ordinary word
+        fail against that word in every other tool, which no declaration
+        could fix — see test_a_tool_named_after_a_common_word.
+        """
         root = self.make_repo()
         run_tmt(root, "new", "doc-budgets", "--lang", "sh")
         run_tmt(root, "new", "doc-scan", "--lang", "sh")
@@ -527,6 +533,22 @@ class CompositionGateTest(TmtTestCase):
         tool.write_text(
             tool.read_text(encoding="utf-8")
             + "printf '%s\\n' 'Sibling doc-budgets composes this tool'\n",
+            encoding="utf-8",
+        )
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual((returncode, failures), (0, []))
+
+    def test_a_path_position_in_a_string_still_fails(self) -> None:
+        """Path strings are why string literals are scanned at all."""
+        root = self.make_repo()
+        run_tmt(root, "new", "doc-budgets", "--lang", "sh")
+        run_tmt(root, "new", "doc-scan", "--lang", "sh")
+        tool = root / "tools" / "doc-scan"
+        tool.write_text(
+            tool.read_text(encoding="utf-8")
+            + 'target="tools/doc-budgets"\n',
             encoding="utf-8",
         )
 
@@ -540,6 +562,20 @@ class CompositionGateTest(TmtTestCase):
                 "it in requires"
             ],
         )
+
+    def test_a_tool_named_after_a_common_word(self) -> None:
+        """A plausible id must not be unusable.
+
+        The scaffold's own text contains the word "json", so matching the
+        bare word made `tmt new json` fail every other tool in the repo.
+        """
+        root = self.make_repo()
+        run_tmt(root, "new", "json", "--lang", "sh")
+        run_tmt(root, "new", "other", "--lang", "sh")
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual((returncode, failures), (0, []))
 
     def test_undecodable_body_is_skipped_not_a_crash(self) -> None:
         root = self.make_repo()

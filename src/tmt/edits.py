@@ -162,15 +162,17 @@ def rename(root: Path, tool_id: str, new_id: str) -> dict[str, Any]:
 def _bodies_mentioning(
     root: Path, tools: dict[str, Any], needle: str
 ) -> list[str]:
-    """Tools whose body still uses ``needle`` as a standalone word.
+    """Tools whose body still invokes ``needle`` by adjacency.
 
     Renaming rewrites entries and filenames, never a sibling's source, so
     a caller invoking the old id by adjacency would otherwise break with
     nothing to notice it: the old id is unregistered, so the
-    undeclared-composition gate has nothing left to match.
+    undeclared-composition gate has nothing left to match. The match is
+    the same path-position one that gate uses, so an ordinary word in
+    prose is not mistaken for a call.
     """
     pattern = re.compile(
-        f"(?<![A-Za-z0-9_-]){re.escape(needle)}(?![A-Za-z0-9_-])"
+        rf"""/\s*["']?\s*{re.escape(needle)}(?![A-Za-z0-9_-])"""
     )
     stale: list[str] = []
     for other in sorted(tools):

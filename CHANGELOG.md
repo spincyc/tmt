@@ -38,6 +38,17 @@ into a shipped one.
   Additive and optional per the registry contract's versioning rule; a stamp
   written before it falls back to the local id.
 
+### Changed
+
+- The undeclared-composition gate matches a sibling id only in a **path
+  position** — preceded by `/`, at most a quote and whitespace between — where
+  the mandated adjacency idiom puts it. Matching the bare word made a tool
+  named after an ordinary word unusable: the scaffold's own text contains
+  `json`, so `tmt new json` failed every other tool in the repository and no
+  `requires` declaration could fix a dependency that did not exist. Path
+  strings, which are why string literals are scanned at all, still match. The
+  same rule now governs `tmt rename`'s stale-caller warning.
+
 ### Added
 
 - `tmt check` warns when a tool's `lang` has no syntax gate, naming the tool,

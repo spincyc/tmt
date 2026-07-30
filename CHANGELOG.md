@@ -4,16 +4,16 @@ Notable user-visible changes are recorded here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions are [PEP 440](https://peps.python.org/pep-0440/) pre-releases
-(`0.1.0a4`), not [Semantic Versioning](https://semver.org/) releases: while the
+(`0.1.0a5`), not [Semantic Versioning](https://semver.org/) releases: while the
 project is alpha any release may change documented behavior, and this file is
 the record of what changed. Public compatibility — documented CLI behavior,
 exit codes, the versioned `tmt.json` registry format, and the JSON output
 protocol — becomes a semver promise at 1.0; until then the machine contracts
-under `docs/contracts/` carry their own explicit versions. Unreleased changes
-accumulate in the `[Unreleased]` section below rather than being backdated
+under `docs/contracts/` carry their own explicit versions. Changes made after a
+release accumulate in an `[Unreleased]` section rather than being backdated
 into a shipped one.
 
-## [Unreleased]
+## [0.1.0a5] - 2026-07-29
 
 A security-and-robustness pass: containment on every write path, honest
 environment-error classification, a note habit that no longer depends on aiq,

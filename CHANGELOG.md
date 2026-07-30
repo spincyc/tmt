@@ -17,6 +17,13 @@ into a shipped one.
 
 ### Changed
 
+- Two open design questions are closed as settled decisions, with their
+  rationale and revisit conditions in [DESIGN.md](DESIGN.md): `stage` gains no
+  `deprecated` value, and a scaffolded tool has no upgrade path to a newer
+  template. Both are documentation-only — the point of each is that nothing
+  gets built. `docs/concepts.md` now states that a scaffold is a starting
+  point rather than a live dependency.
+
 - tmt's own `tools/sanity-check` and `tools/verify` are `stable`, with real
   tests. They had sat at `draft` with no test — the state tmt exists to
   prevent elsewhere — so the dogfood claim was thinner than it read.

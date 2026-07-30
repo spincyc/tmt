@@ -53,6 +53,13 @@ Both scaffolds are born check-passing and exemplify the cli-v1 contract:
 `--help`, and a `--json` stub emitting one compact key-sorted object with
 `"v": 1` (the Python template also models the cli-v1 error envelope).
 
+A scaffold is a starting point, not a live dependency. The body is
+hand-edited the moment the tool is useful, so tmt records no template
+provenance and offers no upgrade path: a newer template never invalidates an
+older tool. What has to stay true is the cli-v1 contract, and `tmt check`
+verifies that directly on every run — against vendored and hand-written tools
+too, which template provenance could not reach.
+
 ## Composition
 
 A tool calls a sibling by adjacency, not by `PATH` or registry lookup:

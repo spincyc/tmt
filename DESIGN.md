@@ -235,10 +235,11 @@ sibling invoked through some other construction going undetected — acceptable,
 because such a construction already violates the composition rule the gate
 exists to enforce.
 
-## Settled 2026-07-29 (post-audit triage)
+## Settled (post-audit triage)
 
 Decided with the owner after the audit; each was a live question and none
-should be re-raised without new evidence.
+should be re-raised without new evidence. The first five were settled
+2026-07-29, the last two 2026-07-30.
 
 | Question | Decision | Why |
 |---|---|---|
@@ -247,18 +248,14 @@ should be re-raised without new evidence.
 | Windows support? | No; Linux and macOS only | `tools/<id>.test` files are `sh`, and the composition idiom is a POSIX path expression. Supporting Windows is a different product, not a port |
 | `make verify` inside an extracted sdist runs a weaker battery (no git) | Accepted; it prints `SKIP check_tracked_paths, check_git_hygiene: not a git work tree` | A packager cannot have repository hygiene gates without a repository. Naming the skipped gates is honest; silently passing them would not be, and the 200-plus tests still run |
 | Should the note store migrate old aiq-held notes? | No migration | Verified 2026-07-29: no repository under `~/git` held any `tmt`-sourced note event, so there was nothing to migrate |
+| Should `stage` gain a `deprecated` value? | No | Every version that respects tmt's invariants collapses into a naming convention. It cannot be a failure — flipping the stage would break every dependent's build, so deprecation could never land separately from migration, which is `tmt rm` with extra steps. So it must be a warning; but `stable_gate_failures` drops warnings, so it would not stop anyone promoting into a dependency on a retiring tool. What remains is one warning line, which `tmt set purpose "DEPRECATED — use X"` already gives for free. Worse, `vendor` copies entries verbatim, so a foreign repo's retirement would land as a standing warning locally, and a `deprecated` that skipped the stable battery would make deprecating the cheapest way to silence a failing test. "Who still depends on this?" is already answered: `tmt rm` refuses and names every dependent. **Revisit** if a retirement is ever too large for one coherent commit |
+| Can a tool be upgraded to a newer scaffold? | No; scaffolds are a starting point, not a live dependency | `tool.py` and `tool.sh` have never changed since 0.1.0a1 — all observed churn was `tool.test` while it was new — so the hard case has zero instances. The subset with the churn degenerates anyway: a real test has replaced the skeleton (nothing to merge into), and an unmodified one cannot be stable (nothing to preserve). A three-way merge needs a base that is not stored, and every place to store it is bad: machine-local state is absent in a fresh clone and in CI, a registry field means committing a template copy per tool into the ~15-tokens-per-tool discovery surface, and git history breaks on squash, rebase, import, and vendoring. Adding any entry field is also a hard forward-incompatibility, since an unknown key makes `registry.load` raise and every command fail on an older tmt. **Accepted risk**: a future template *correctness* fix leaves older tools silently carrying the bug — answered with a gate, which catches vendored and hand-written tools too, not with template provenance, which catches only scaffolds |
 
 ## Open questions
 
-- Whether `stage` gains a third value (`deprecated`) and what the gates do
-  with it: may a stable tool require a deprecated one, and is depending on
-  one a warning or a failure?
 - Whether `tmt vendor` learns to fetch (URL sources, a `tmt outdated`
   sweep across vendored tools) given "vendoring, never linking" — the sync
   semantics are the hard part, not the transport.
-- Whether a tool scaffolded by an older tmt can be upgraded to a newer
-  template once its body has been edited, and what "same tool, new
-  scaffold" would even mean.
 - tmt.json merge conflicts on concurrent branches: sorted keys + one object
   per tool should keep them rare; document `tmt check` as post-merge fixup.
 - Does tmt.json carry repo config beyond `tools` (default lang, caps), or

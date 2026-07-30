@@ -3,7 +3,7 @@
     "sanity-check": {
       "lang": "sh",
       "purpose": "Confirm the required commands and Python version are present.",
-      "stage": "draft",
+      "stage": "stable",
       "usage": "tools/sanity-check [--help]"
     },
     "verify": {
@@ -11,7 +11,7 @@
       "requires": [
         "sanity-check"
       ],
-      "stage": "draft",
+      "stage": "stable",
       "usage": "tools/verify [--help]"
     }
   },

@@ -17,6 +17,13 @@ into a shipped one.
 
 ### Changed
 
+- tmt's own `tools/sanity-check` and `tools/verify` are `stable`, with real
+  tests. They had sat at `draft` with no test — the state tmt exists to
+  prevent elsewhere — so the dogfood claim was thinner than it read.
+  `verify.test` deliberately does not run the battery, since `tmt check` runs
+  the test and `verify` runs `tmt check`; it pins the `--help` short-circuit
+  that makes that recursion impossible, and that a raising check still fails
+  the run.
 - tmt is distributed from this repository only, matching aiq: `pipx install
   'tmt-toolmaker @ git+…@main'`, or a tag for a stable pin. The PyPI publish
   workflow is removed — it worked up to the upload and failed only for want of

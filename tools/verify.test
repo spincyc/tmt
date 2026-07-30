@@ -1,0 +1,51 @@
+#!/bin/sh
+# Test for tools/verify: exit 0 = pass (the stable gate).
+#
+# Deliberately does not run the full battery: `tmt check` runs this file,
+# and `tools/verify` runs `tmt check`, so a test that invoked the tool for
+# real would recurse. The assertions below cover the contract that keeps
+# that recursion impossible, and the failure path the battery is for.
+set -eu
+
+tool="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/verify"
+
+# --help always works.
+"$tool" --help >/dev/null
+help_text="$("$tool" --help)"
+case $help_text in
+  *usage:*) ;;
+  *) echo "--help does not print a usage line" >&2; exit 1 ;;
+esac
+
+# --help must short-circuit before any check runs. If it ever stops doing
+# so, `tmt check` recurses through this tool instead of gating it.
+case $help_text in
+  *"Verification passed"* | *FAIL* | *SKIP*)
+    echo "--help ran the checks instead of describing them" >&2
+    exit 1
+    ;;
+esac
+
+# The battery is only useful when it can fail, and a check reports failure
+# by raising. Import the tool as a module — its __main__ guard keeps it
+# from running — and make the first check raise: main must report and exit
+# non-zero. Only that one check runs, so this stays cheap.
+python3 - "$tool" <<'ASSERT'
+import importlib.util
+import sys
+from importlib.machinery import SourceFileLoader
+
+loader = SourceFileLoader("verify_under_test", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+
+
+def explode() -> None:
+    raise RuntimeError("planted failure")
+
+
+module.check_sanity = explode
+if module.main([]) == 0:
+    raise SystemExit("a raising check did not fail the run")
+ASSERT

@@ -1,0 +1,35 @@
+#!/bin/sh
+# Test for tools/sanity-check: exit 0 = pass (the stable gate).
+set -eu
+
+tool="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/sanity-check"
+
+# --help always works, and describes the tool without running it.
+"$tool" --help >/dev/null
+help_text="$("$tool" --help)"
+case $help_text in
+  *usage:*) ;;
+  *) echo "--help does not print a usage line" >&2; exit 1 ;;
+esac
+case $help_text in
+  *"Sanity check passed"*)
+    echo "--help ran the checks instead of describing them" >&2
+    exit 1
+    ;;
+esac
+
+# The whole point of the tool: on a host that has the prerequisites, it
+# passes and says so. This runs it for real — it only probes for git and
+# python3 and writes nothing.
+output="$("$tool")"
+case $output in
+  *"Sanity check passed"*) ;;
+  *) echo "unexpected output: $output" >&2; exit 1 ;;
+esac
+
+# A missing prerequisite must fail, or the gate would pass on any host.
+# An empty PATH is the cheapest way to make every command unfindable.
+if PATH= "$tool" >/dev/null 2>&1; then
+  echo "reported success with no commands available" >&2
+  exit 1
+fi

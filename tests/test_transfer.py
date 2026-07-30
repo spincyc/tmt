@@ -186,6 +186,60 @@ class VendorTest(TmtTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "tools/greet\n")
 
+    def test_vendor_refuses_a_symlinked_destination(self) -> None:
+        source, _ = self._source_with_stable_tool("payload")
+        dest = self.make_repo()
+        outside = self.make_dir() / "OUTSIDE.txt"
+        (dest / "tools").mkdir(exist_ok=True)
+        (dest / "tools" / "payload").symlink_to(outside)
+
+        payload = self.assert_json_error(
+            run_tmt(dest, "vendor", os.fspath(source), "payload", "--json"),
+            "containment",
+            3,
+        )
+
+        self.assertIn("destination tools/payload", payload["error"])
+        self.assertFalse(outside.exists())
+        self.assertEqual(load_registry(dest)["tools"], {})
+
+    def test_vendor_refuses_a_symlinked_destination_companion(self) -> None:
+        source, _ = self._source_with_stable_tool("payload")
+        dest = self.make_repo()
+        outside = self.make_dir() / "OUTSIDE.md"
+        (dest / "tools").mkdir(exist_ok=True)
+        (dest / "tools" / "payload.md").symlink_to(outside)
+
+        payload = self.assert_json_error(
+            run_tmt(dest, "vendor", os.fspath(source), "payload", "--json"),
+            "containment",
+            3,
+        )
+
+        self.assertIn("destination tools/payload.md", payload["error"])
+        self.assertFalse(outside.exists())
+        # Planned before the first byte: not even the executable landed.
+        self.assertFalse((dest / "tools" / "payload").exists())
+        self.assertEqual(load_registry(dest)["tools"], {})
+
+    def test_revendoring_over_a_regular_file_overwrites(self) -> None:
+        source, _ = self._source_with_stable_tool("payload")
+        dest = self.make_repo()
+        run_tmt(dest, "vendor", os.fspath(source), "payload")
+        tool = dest / "tools" / "payload"
+        tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        tool.chmod(0o644)
+
+        self.assert_json_success(
+            run_tmt(dest, "vendor", os.fspath(source), "payload", "--json")
+        )
+
+        self.assertFalse(tool.is_symlink())
+        self.assertEqual(
+            sha256_file(tool), sha256_file(source / "tools" / "payload")
+        )
+        self.assertTrue(os.access(tool, os.X_OK))
+
     def test_vendor_from_repo_without_registry(self) -> None:
         dest = self.make_repo()
         bare = self.make_dir()
@@ -415,6 +469,24 @@ class AdoptTest(TmtTestCase):
         )
 
         self.assertIn("helper", payload["error"])
+
+    def test_adopt_refuses_a_symlinked_destination(self) -> None:
+        repo = self.make_repo()
+        self._new_stable(repo, "clean")
+        dest = self.make_repo()
+        outside = self.make_dir() / "OUTSIDE.txt"
+        (dest / "tools").mkdir(exist_ok=True)
+        (dest / "tools" / "clean").symlink_to(outside)
+
+        payload = self.assert_json_error(
+            run_tmt(repo, "adopt", "clean", "--to", os.fspath(dest), "--json"),
+            "containment",
+            3,
+        )
+
+        self.assertIn("destination tools/clean", payload["error"])
+        self.assertFalse(outside.exists())
+        self.assertEqual(load_registry(dest)["tools"], {})
 
     def test_adopt_to_destination_without_registry(self) -> None:
         repo = self.make_repo()

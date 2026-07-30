@@ -23,6 +23,7 @@ from tmt import (
     claudehook,
     edits,
     notestore,
+    paths,
     registry,
     scaffold,
     sessioncontext,
@@ -62,11 +63,17 @@ class _ArgumentParser(argparse.ArgumentParser):
         raise SystemExit(2)
 
 
+def _escape(character: str) -> str:
+    """A JSON-style escape wide enough for astral characters."""
+    code = ord(character)
+    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+
+
 def _single_line(value: str) -> str:
     return "".join(
         character
         if character.isprintable() and character not in {"\t", "\r", "\n"}
-        else f"\\u{ord(character):04x}"
+        else _escape(character)
         for character in value
     )
 
@@ -76,7 +83,7 @@ def _terminal_safe(text: str) -> str:
     return "".join(
         character
         if character in {"\n", "\t"} or character.isprintable()
-        else f"\\u{ord(character):04x}"
+        else _escape(character)
         for character in text
     )
 
@@ -380,6 +387,18 @@ def _list(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _read_doc(path: Path) -> str:
+    """A tool's long doc, whose bytes tmt does not control."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise TmtError(
+            "check-failed", f"{path} is not valid UTF-8: {error}"
+        ) from error
+    except OSError as error:
+        raise TmtError("io-error", f"{path}: {error}") from error
+
+
 def _show(arguments: argparse.Namespace) -> int:
     root = registry.require_root()
     data = registry.load(root)
@@ -392,13 +411,20 @@ def _show(arguments: argparse.Namespace) -> int:
     tool = registry.tool_path(root, arguments.id)
     help_text: str | None = None
     if tool.is_file():
+        # show executes the tool and reads its doc, so both must be the
+        # repository's own files — `tmt check` gates the executable, and
+        # showing one is no less an execution.
+        paths.resolve_within(root, tool, label=f"tools/{arguments.id}")
         ok, captured = checks.capture_help(tool)
         if ok:
             help_text = captured
     doc_path = tool.with_name(f"{tool.name}.md")
-    doc = (
-        doc_path.read_text(encoding="utf-8") if doc_path.is_file() else None
-    )
+    doc = None
+    if doc_path.is_file():
+        paths.resolve_within(
+            root, doc_path, label=f"tools/{arguments.id}.md"
+        )
+        doc = _read_doc(doc_path)
     if arguments.json:
         _emit(
             {"doc": doc, "entry": entry, "help": help_text, "id": arguments.id},

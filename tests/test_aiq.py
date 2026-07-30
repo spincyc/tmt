@@ -175,6 +175,37 @@ class NoteWithoutAiqTest(AiqStubTestCase):
         )
         self.assertEqual(in_work_tree, ["tmt.json"])
 
+    def test_subdirectory_registry_keeps_notes_out_of_the_work_tree(
+        self,
+    ) -> None:
+        """A registry below a repo root must not leave notes committable.
+
+        The store is not resolved by walking upward: a stray ancestor
+        `.git` — a dotfiles repo at $HOME, or a `git init` left in /tmp —
+        would capture an unrelated repository's notes. The local fallback
+        carries its own ignore file instead.
+        """
+        monorepo = self.make_dir()
+        run_git(monorepo, "init", "-q", "-b", "main")
+        package = monorepo / "packages" / "foo"
+        package.mkdir(parents=True)
+        self.assertEqual(run_tmt(package, "init").returncode, 0)
+
+        result = run_tmt(
+            package, "note", "derive-y", env=self.without_aiq
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        store = package / ".tmt" / "notes.jsonl"
+        self.assertTrue(store.is_file())
+        self.assertEqual(
+            (package / ".tmt" / ".gitignore").read_text(encoding="utf-8"),
+            "*\n",
+        )
+        run_git(monorepo, "add", "-A")
+        staged = run_git(monorepo, "diff", "--cached", "--name-only").split()
+        self.assertEqual(staged, ["packages/foo/tmt.json"])
+
     def test_note_for_an_existing_tool_reports_it_is_built(self) -> None:
         self.assertEqual(run_tmt(self.repo, "new", "alpha").returncode, 0)
 

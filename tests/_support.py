@@ -7,6 +7,7 @@ codes, and stderr error codes (aiq cli-v1 protocol).
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import subprocess
@@ -43,6 +44,10 @@ sys.exit(0)
 """
 
 
+_HOME_SANDBOX = tempfile.TemporaryDirectory(prefix="tmt-test-home-")
+atexit.register(_HOME_SANDBOX.cleanup)
+
+
 def run_tmt(
     cwd: Path,
     *arguments: str,
@@ -52,6 +57,11 @@ def run_tmt(
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.fspath(SRC_DIR)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Isolation is structural, not incidental: nothing tmt reads today
+    # resolves through HOME, but a future Path.home() call must not be able
+    # to write into the developer's home directory unnoticed.
+    environment["HOME"] = _HOME_SANDBOX.name
+    environment["XDG_STATE_HOME"] = os.path.join(_HOME_SANDBOX.name, "state")
     if env:
         environment.update(env)
     return subprocess.run(

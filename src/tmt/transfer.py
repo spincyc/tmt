@@ -68,17 +68,34 @@ def _origin_stamp(source_root: Path, copied_tool: Path) -> dict[str, str]:
     return stamp
 
 
+def _plan_destination(dest_root: Path, dest: Path, *, label: str) -> None:
+    """Refuse a destination a copy would have to follow out of the repo.
+
+    Copying writes through a symlinked destination, so containment has to
+    cover the destination itself and not merely its directory. An existing
+    regular file is left alone here: overwriting one is what re-vendoring
+    means.
+    """
+    paths.resolve_within(dest_root, dest, label=label)
+    if dest.is_symlink():
+        raise TmtError(
+            "containment",
+            f"{label} {dest} is a symlink; tmt refuses to write through it",
+        )
+
+
 def _copy_tool(source_root: Path, dest_root: Path, tool_id: str) -> Path:
     """Copy a tool and its companions, or copy nothing at all.
 
-    Every source is contained-checked before the first byte is written, so
-    a refusal cannot leave a half-copied tool behind for `tmt check` to
-    find.
+    Every source and destination is contained-checked before the first byte
+    is written, so a refusal cannot leave a half-copied tool behind for
+    `tmt check` to find.
     """
     source = registry.tool_path(source_root, tool_id)
     dest = registry.tool_path(dest_root, tool_id)
     paths.resolve_within(source_root, source, label=f"source tools/{tool_id}")
     paths.resolve_within(dest_root, dest.parent, label="tools directory")
+    _plan_destination(dest_root, dest, label=f"destination tools/{tool_id}")
     if source.resolve() == dest.resolve():
         raise TmtError(
             "usage",
@@ -93,9 +110,13 @@ def _copy_tool(source_root: Path, dest_root: Path, tool_id: str) -> Path:
                 companion,
                 label=f"source tools/{tool_id}{suffix}",
             )
-            planned.append(
-                (companion, dest.with_name(dest.name + suffix))
+            companion_dest = dest.with_name(dest.name + suffix)
+            _plan_destination(
+                dest_root,
+                companion_dest,
+                label=f"destination tools/{tool_id}{suffix}",
             )
+            planned.append((companion, companion_dest))
     paths.make_directory(dest.parent)
     for source_path, dest_path in planned:
         _copy_file(source_path, dest_path)
@@ -103,9 +124,19 @@ def _copy_tool(source_root: Path, dest_root: Path, tool_id: str) -> Path:
 
 
 def _copy_file(source: Path, dest: Path) -> None:
+    """Copy contents and mode without ever following a link at ``dest``.
+
+    ``O_NOFOLLOW`` closes the window the planned containment check leaves
+    open, and the mode is set through the descriptor so it cannot land on
+    some other file either.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
     try:
-        shutil.copyfile(source, dest)
-        shutil.copymode(source, dest)
+        mode = source.stat().st_mode & 0o777
+        with source.open("rb") as reader:
+            with os.fdopen(os.open(dest, flags, mode), "wb") as writer:
+                shutil.copyfileobj(reader, writer)
+                os.fchmod(writer.fileno(), mode)
     except OSError as error:
         raise TmtError("io-error", f"{dest}: {error}") from error
 

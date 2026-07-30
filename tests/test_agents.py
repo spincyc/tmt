@@ -21,6 +21,8 @@ END_MARKER = "<!-- /tmt:agents -->"
 BLOCK = f"{BEGIN_MARKER}\n{EXPECTED_FRAGMENT}\n{END_MARKER}"
 STALE_BLOCK = f"{BEGIN_MARKER}\ntampered text\n{END_MARKER}"
 STALE_FAILURE = "AGENTS.md tmt fragment is stale; run `tmt agents --write`"
+# Line terminators to str.splitlines, ordinary text to tmt's locator.
+EXOTIC_BREAKS = "\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
 
 
 class FragmentPrintTest(TmtTestCase):
@@ -176,6 +178,31 @@ class AgentsWriteTest(TmtTestCase):
             (root / "AGENTS.md").read_text(encoding="utf-8"),
             f"# Repo\n\n{BLOCK}\n\nTrailing prose.\n",
         )
+
+    def test_exotic_line_breaks_do_not_move_the_block(self) -> None:
+        root = self.make_repo()
+        prose = (
+            f"# Guide{EXOTIC_BREAKS}{BEGIN_MARKER}{EXOTIC_BREAKS}KEEP ME"
+            f"{EXOTIC_BREAKS}{END_MARKER}"
+        )
+        (root / "AGENTS.md").write_text(
+            f"{prose}\n{STALE_BLOCK}\n", encoding="utf-8"
+        )
+
+        payload = self.assert_json_success(
+            run_tmt(root, "agents", "--write", "--json")
+        )
+
+        self.assertEqual(payload["previous"], "stale")
+        self.assertEqual(
+            (root / "AGENTS.md").read_text(encoding="utf-8"),
+            f"{prose}\n{BLOCK}\n",
+        )
+        self.assertEqual(self.check_json(root)[0], 0)
+        again = self.assert_json_success(
+            run_tmt(root, "agents", "--write", "--json")
+        )
+        self.assertEqual(again["changed"], False)
 
     def test_malformed_block_refuses_write(self) -> None:
         root = self.make_repo()

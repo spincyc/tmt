@@ -39,6 +39,20 @@ class ScaffoldCheckTest(TmtTestCase):
 
         self.assertEqual((returncode, failures, warnings), (0, [], []))
 
+    def test_deeply_nested_registry_is_a_collected_failure(self) -> None:
+        root = self.make_repo()
+        # json.loads recurses once per level, so this overflows the stack:
+        # the battery must collect that as a parse failure.
+        (root / "tmt.json").write_text(
+            "[" * 100000 + "]" * 100000, encoding="utf-8"
+        )
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("registry: tmt.json does not parse", failures[0])
+
     def test_check_without_registry_reports_no_registry(self) -> None:
         root = self.make_dir()
 
@@ -175,6 +189,23 @@ class DraftGateTest(TmtTestCase):
         self.assertEqual(returncode, 1)
         self.assertEqual(failures, ["grumpy: --help exited 7"])
 
+    def test_unbounded_help_output_is_capped(self) -> None:
+        root = self.make_repo()
+        run_tmt(root, "new", "hog", "--lang", "sh")
+        # /dev/zero finishes inside the help timeout, so only a byte cap
+        # keeps this from exhausting memory.
+        write_executable(
+            root / "tools" / "hog", "#!/bin/sh\nexec cat /dev/zero\n"
+        )
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(
+            failures,
+            ["hog: --help wrote more than 1048576 bytes to stdout"],
+        )
+
 
 class StableGateTest(TmtTestCase):
     def _make_stable(self, root, tool_id: str, *, with_test: bool = True):
@@ -237,6 +268,25 @@ class StableGateTest(TmtTestCase):
 
         self.assertEqual(returncode, 1)
         self.assertEqual(failures, ["flaky: tools/flaky.test exited 1"])
+
+    def test_symlinked_test_outside_the_repo_is_refused(self) -> None:
+        root = self.make_repo()
+        self._make_stable(root, "st")
+        outside = self.make_dir()
+        proof = outside / "PROOF"
+        evil = outside / "evil.test"
+        write_executable(evil, f'#!/bin/sh\n: > "{proof}"\n')
+        test = root / "tools" / "st.test"
+        test.unlink()
+        test.symlink_to(evil)
+
+        returncode, failures, _ = self.check_json(root)
+
+        self.assertEqual(returncode, 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("st: tools/st.test", failures[0])
+        self.assertIn("outside the repository", failures[0])
+        self.assertFalse(proof.exists())
 
     def test_stable_requires_draft(self) -> None:
         root = self.make_repo()

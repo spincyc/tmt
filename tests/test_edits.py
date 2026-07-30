@@ -239,13 +239,23 @@ class SetTest(TmtTestCase):
         )
 
     def test_set_rejects_a_purpose_over_the_cap(self) -> None:
+        """The refusal must leave the old value, not merely reject the new.
+
+        Asserting only `!= the rejected value` passed for a mutant that
+        blanked the field and saved anyway.
+        """
         root = self.make_repo()
         self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        self.assertEqual(
+            run_tmt(root, "set", "alpha", "purpose", "Keep me").returncode, 0
+        )
+
         result = run_tmt(root, "set", "alpha", "purpose", "x" * 81, "--json")
+
         payload = self.assert_json_error(result, "check-failed", 3)
         self.assertIn("80-character cap", payload["error"])
-        self.assertNotEqual(
-            load_registry(root)["tools"]["alpha"]["purpose"], "x" * 81
+        self.assertEqual(
+            load_registry(root)["tools"]["alpha"]["purpose"], "Keep me"
         )
 
     def test_set_boolean_field(self) -> None:
@@ -278,6 +288,52 @@ class SetTest(TmtTestCase):
             load_registry(root)["tools"]["alpha"].get("requires", []), []
         )
 
+    def test_set_requires_refuses_a_cycle(self) -> None:
+        """`set` must not be able to write what `check` forbids.
+
+        Schema validation alone let a command exit 0 and leave the
+        repository red.
+        """
+        root = self.make_repo()
+        for tool_id in ("aa", "bb"):
+            self.assertEqual(run_tmt(root, "new", tool_id).returncode, 0)
+        self.assertEqual(
+            run_tmt(root, "set", "aa", "requires", "bb").returncode, 0
+        )
+
+        result = run_tmt(root, "set", "bb", "requires", "aa", "--json")
+
+        payload = self.assert_json_error(result, "check-failed", 3)
+        self.assertIn("cycle", payload["error"])
+        self.assertEqual(
+            load_registry(root)["tools"]["bb"].get("requires", []), []
+        )
+        self.assertEqual(self.check_json(root)[0], 0)
+
+    def test_set_requires_refuses_a_self_cycle(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "aa").returncode, 0)
+        result = run_tmt(root, "set", "aa", "requires", "aa", "--json")
+        self.assert_json_error(result, "check-failed", 3)
+        self.assertEqual(self.check_json(root)[0], 0)
+
+    def test_set_requires_refuses_a_draft_under_a_stable_tool(self) -> None:
+        root = self.make_repo()
+        for tool_id in ("cc", "dd"):
+            self.assertEqual(run_tmt(root, "new", tool_id).returncode, 0)
+        test = root / "tools" / "dd.test"
+        test.write_text(
+            test.read_text(encoding="utf-8") + '"$tool" --help >/dev/null\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(run_tmt(root, "stage", "dd", "stable").returncode, 0)
+
+        result = run_tmt(root, "set", "dd", "requires", "cc", "--json")
+
+        payload = self.assert_json_error(result, "check-failed", 3)
+        self.assertIn("would require draft", payload["error"])
+        self.assertEqual(self.check_json(root)[0], 0)
+
     def test_set_list_field_splits_on_commas(self) -> None:
         root = self.make_repo()
         self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
@@ -286,11 +342,87 @@ class SetTest(TmtTestCase):
         )
         self.assertEqual(payload["value"], ["a.toml", "b.json"])
 
+    def test_set_covers_every_field_type(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        cases: list[tuple[str, str, object]] = [
+            ("usage", "tools/alpha [--json]", "tools/alpha [--json]"),
+            ("lang", "sh", "sh"),
+            ("idempotent", "false", False),
+            ("json", "false", False),
+        ]
+        for field, raw, expected in cases:
+            with self.subTest(field=field):
+                payload = self.assert_json_success(
+                    run_tmt(root, "set", "alpha", field, raw, "--json")
+                )
+                self.assertEqual(payload["value"], expected)
+                self.assertEqual(
+                    load_registry(root)["tools"]["alpha"][field], expected
+                )
+
+    def test_set_collapses_whitespace_in_text_fields(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        payload = self.assert_json_success(
+            run_tmt(
+                root, "set", "alpha", "purpose", "  two   words\n", "--json"
+            )
+        )
+        self.assertEqual(payload["value"], "two words")
+
+    def test_set_clears_a_list_field(self) -> None:
+        root = self.make_repo()
+        for tool_id in ("base", "user"):
+            self.assertEqual(run_tmt(root, "new", tool_id).returncode, 0)
+        self.assertEqual(
+            run_tmt(root, "set", "user", "requires", "base").returncode, 0
+        )
+
+        payload = self.assert_json_success(
+            run_tmt(root, "set", "user", "requires", "", "--json")
+        )
+
+        self.assertEqual(payload["value"], [])
+        self.assertEqual(
+            load_registry(root)["tools"]["user"]["requires"], []
+        )
+        self.assertEqual(self.check_json(root)[0], 0)
+
+    def test_set_requires_rejects_a_malformed_id(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        result = run_tmt(root, "set", "alpha", "requires", "Bad Id", "--json")
+        payload = self.assert_json_error(result, "usage", 2)
+        self.assertIn("Bad Id", payload["error"])
+
+    def test_set_reports_the_previous_value(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        self.assertEqual(
+            run_tmt(root, "set", "alpha", "purpose", "First").returncode, 0
+        )
+        payload = self.assert_json_success(
+            run_tmt(root, "set", "alpha", "purpose", "Second", "--json")
+        )
+        self.assertEqual(payload["previous"], "First")
+
+    def test_set_unknown_tool_is_not_found(self) -> None:
+        root = self.make_repo()
+        self.assert_json_error(
+            run_tmt(root, "set", "ghost", "purpose", "x", "--json"),
+            "not-found",
+            3,
+        )
+
     def test_stage_is_not_settable(self) -> None:
         root = self.make_repo()
         self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
         result = run_tmt(root, "set", "alpha", "stage", "stable", "--json")
-        self.assert_json_error(result, "usage", 2)
+        payload = self.assert_json_error(result, "usage", 2)
+        # Pin the field list: without this the test passes on argparse's
+        # `choices` alone and says nothing about the guard it is named for.
+        self.assertIn("stage", payload["error"])
         self.assertEqual(
             load_registry(root)["tools"]["alpha"]["stage"], "draft"
         )

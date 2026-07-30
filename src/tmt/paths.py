@@ -10,6 +10,7 @@ leaves a truncated committed file.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 from tmt.registry import TmtError
@@ -19,7 +20,14 @@ EXECUTABLE_FILE_MODE = 0o755
 
 
 def resolve_within(root: Path, path: Path, *, label: str) -> Path:
-    """Return ``path`` resolved, refusing anything outside ``root``."""
+    """Return ``path`` resolved, refusing anything outside ``root``.
+
+    Containment is decided at resolve time. The writers that follow guard
+    only the final component (``O_NOFOLLOW``), so someone who can already
+    write inside the repository can swap a parent directory for a symlink
+    between this call and the write and escape. Defending that needs
+    ``openat`` walking; tmt does not attempt it.
+    """
     try:
         resolved = path.resolve()
         root_resolved = root.resolve()
@@ -76,9 +84,25 @@ def write_new(path: Path, text: str, *, mode: int = DEFAULT_FILE_MODE) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
+            # On the descriptor, not the path: chmod after the close would
+            # be a window to unlink and substitute a symlink.
+            os.fchmod(handle.fileno(), mode)
     except OSError as error:
         raise TmtError("io-error", f"{path}: {error}") from error
-    os.chmod(path, mode)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Make a completed rename durable, where the filesystem allows it."""
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def write_atomic(
@@ -97,19 +121,25 @@ def write_atomic(
     final_mode = mode if mode is not None else existing_mode
     if final_mode is None:
         final_mode = DEFAULT_FILE_MODE
-    staged = target.with_name(f".{target.name}.{os.getpid()}.tmt-tmp")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     try:
-        descriptor = os.open(staged, flags, 0o600)
+        # A unique staging name: a name derived from the pid outlives a
+        # kill and then blocks every later run that draws the same pid.
+        descriptor, staged_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmt-tmp",
+        )
+        staged = Path(staged_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 handle.write(text)
                 handle.flush()
+                os.fchmod(handle.fileno(), final_mode)
                 os.fsync(handle.fileno())
-            os.chmod(staged, final_mode)
             os.replace(staged, target)
         except BaseException:
             staged.unlink(missing_ok=True)
             raise
     except OSError as error:
         raise TmtError("io-error", f"{path}: {error}") from error
+    _fsync_directory(target.parent)

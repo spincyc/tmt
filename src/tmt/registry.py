@@ -240,6 +240,12 @@ def load(root: Path) -> dict[str, Any]:
         raise TmtError(
             "check-failed", f"tmt.json does not parse: {error}"
         ) from error
+    except RecursionError as error:
+        # Deeply nested JSON exhausts the decoder's stack. That is a fault
+        # in the committed file, not a defect in tmt.
+        raise TmtError(
+            "check-failed", f"tmt.json is nested too deeply to parse: {error}"
+        ) from error
     errors = validate(data)
     if errors:
         summary = errors[0]

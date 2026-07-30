@@ -10,12 +10,15 @@ present in AGENTS.md must be current (see ``tmt.agentsmd``).
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
 import re
+import selectors
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +29,17 @@ HELP_TIMEOUT_SECONDS = 5
 TEST_TIMEOUT_SECONDS = 60
 LINT_TIMEOUT_SECONDS = 10
 SHA256_MAX_BYTES = 64 * 1024 * 1024
+CAPTURE_MAX_BYTES = 1024 * 1024
 _COMPANION_SUFFIXES = (".md", ".test")
 _READ_BLOCK_BYTES = 1024 * 1024
+
+
+class _OutputTooLarge(OSError):
+    """A child wrote past ``CAPTURE_MAX_BYTES`` on one stream.
+
+    An ``OSError`` so that every ``except OSError`` already guarding a child
+    process turns it into a collected failure rather than an exit-70 escape.
+    """
 
 
 def sha256_file(path: Path) -> str:
@@ -56,14 +68,11 @@ def _run(
         cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         start_new_session=True,
     ) as process:
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
+            stdout, stderr = _capture(process, timeout=timeout)
+        except (subprocess.TimeoutExpired, _OutputTooLarge):
             _terminate_group(process)
             raise
     return subprocess.CompletedProcess(
@@ -71,10 +80,49 @@ def _run(
     )
 
 
-def _terminate_group(process: subprocess.Popen[str]) -> None:
+def _capture(
+    process: subprocess.Popen[bytes], *, timeout: int
+) -> tuple[str, str]:
+    """Drain both pipes under a byte cap as well as a deadline.
+
+    ``communicate`` bounds only time, so a tool printing ``/dev/zero``
+    exhausts memory long before the timeout can fire. The descriptors are
+    read directly to keep the cap ahead of any buffering.
+    """
+    pipes = (("stdout", process.stdout), ("stderr", process.stderr))
+    names = {pipe.fileno(): name for name, pipe in pipes if pipe is not None}
+    buffers = {name: bytearray() for name in names.values()}
+    deadline = time.monotonic() + timeout
+    with selectors.DefaultSelector() as selector:
+        for descriptor in names:
+            selector.register(descriptor, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            for key, _ in selector.select(remaining):
+                chunk = os.read(key.fd, _READ_BLOCK_BYTES)
+                if not chunk:
+                    selector.unregister(key.fd)
+                    continue
+                name = names[key.fd]
+                buffers[name] += chunk
+                if len(buffers[name]) > CAPTURE_MAX_BYTES:
+                    raise _OutputTooLarge(
+                        f"wrote more than {CAPTURE_MAX_BYTES} bytes "
+                        f"to {name}"
+                    )
+    process.wait(timeout=max(deadline - time.monotonic(), 0))
+    return (
+        bytes(buffers.get("stdout", bytearray())).decode("utf-8", "replace"),
+        bytes(buffers.get("stderr", bytearray())).decode("utf-8", "replace"),
+    )
+
+
+def _terminate_group(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
+    except OSError:
         process.kill()
     try:
         process.communicate(timeout=HELP_TIMEOUT_SECONDS)
@@ -90,6 +138,8 @@ def capture_help(path: Path) -> tuple[bool, str]:
         )
     except subprocess.TimeoutExpired:
         return False, f"--help did not finish within {HELP_TIMEOUT_SECONDS}s"
+    except _OutputTooLarge as error:
+        return False, f"--help {error}"
     except OSError as error:
         return False, f"--help could not run: {error}"
     if completed.returncode != 0:
@@ -121,6 +171,16 @@ def portability_findings(root: Path, tool_id: str, tool: Path) -> list[str]:
     return findings
 
 
+@functools.lru_cache(maxsize=None)
+def _word_pattern(word: str) -> re.Pattern[str]:
+    """``word`` as a standalone-word matcher, compiled once.
+
+    Cached because ``re``'s own cache holds 512 patterns: above that a
+    registry rescans every (tool, sibling) pair through a fresh compile.
+    """
+    return re.compile(f"(?<![A-Za-z0-9_-]){re.escape(word)}(?![A-Za-z0-9_-])")
+
+
 def undeclared_composition(
     tool_id: str, entry: dict[str, Any], tool: Path, tools: dict[str, Any]
 ) -> list[str]:
@@ -149,10 +209,7 @@ def undeclared_composition(
     for other in sorted(tools):
         if other == tool_id or other in declared:
             continue
-        pattern = (
-            f"(?<![A-Za-z0-9_-]){re.escape(other)}(?![A-Za-z0-9_-])"
-        )
-        if re.search(pattern, body):
+        if _word_pattern(other).search(body):
             failures.append(
                 f"{tool_id}: uses sibling {other!r} without declaring it "
                 "in requires"
@@ -191,7 +248,10 @@ def _load_for_checks(
         ]
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+    # json.loads recurses once per nesting level, so a deeply nested
+    # tmt.json overflows the stack: still a parse failure to collect, not
+    # an internal error.
+    except (json.JSONDecodeError, RecursionError, UnicodeDecodeError) as error:
         return None, [f"registry: tmt.json does not parse: {error}"]
     except OSError as error:
         return None, [f"registry: tmt.json cannot be read: {error}"]
@@ -255,7 +315,7 @@ def run_tool_checks(
             failures.append(
                 f"{tool_id}: requires {dependency!r} which is not registered"
             )
-    failures.extend(_find_cycles(tools, start=tool_id))
+    failures.extend(cycle_failures(tools, start=tool_id))
     return failures, warnings
 
 
@@ -339,11 +399,11 @@ def _check_requires(tools: dict[str, Any]) -> list[str]:
                     f"{tool_id}: requires {dependency!r} which is not "
                     "registered"
                 )
-    failures.extend(_find_cycles(tools))
+    failures.extend(cycle_failures(tools))
     return failures
 
 
-def _find_cycles(
+def cycle_failures(
     tools: dict[str, Any], *, start: str | None = None
 ) -> list[str]:
     """Cycles in the requires graph, or only those reachable from ``start``."""
@@ -392,23 +452,9 @@ def _check_stable(
     tool: Path,
     tools: dict[str, Any],
 ) -> tuple[list[str], list[str]]:
-    failures: list[str] = []
-    test = tool.with_name(f"{tool.name}.test")
-    if not test.is_file():
-        failures.append(
-            f"{tool_id}: stable tool is missing tools/{tool_id}.test"
-        )
-    elif not os.access(test, os.X_OK):
-        failures.append(
-            f"{tool_id}: executable bit not set on tools/{tool_id}.test"
-        )
-    elif _read_body(test) == scaffold.render_test(tool_id):
-        failures.append(
-            f"{tool_id}: tools/{tool_id}.test is the unmodified scaffold; "
-            "write real assertions before promoting"
-        )
-    else:
-        failures.extend(_run_test(root, tool_id, test))
+    failures = _check_test(
+        root, tool_id, tool.with_name(f"{tool.name}.test")
+    )
     for dependency in entry["requires"]:
         dependency_entry = tools.get(dependency)
         if (
@@ -422,6 +468,30 @@ def _check_stable(
     return failures, _origin_drift(tool_id, entry, tool)
 
 
+def _check_test(root: Path, tool_id: str, test: Path) -> list[str]:
+    """Gate the stable test companion, containment first.
+
+    The test is executed, so it is its resolved target that has to be
+    inside the repository — containing the tools directory is not enough.
+    A refusal is a collected failure line, never an escape from the
+    battery.
+    """
+    if not test.is_file():
+        return [f"{tool_id}: stable tool is missing tools/{tool_id}.test"]
+    try:
+        paths.resolve_within(root, test, label=f"tools/{tool_id}.test")
+    except TmtError as error:
+        return [f"{tool_id}: {error}"]
+    if not os.access(test, os.X_OK):
+        return [f"{tool_id}: executable bit not set on tools/{tool_id}.test"]
+    if _read_body(test) == scaffold.render_test(tool_id):
+        return [
+            f"{tool_id}: tools/{tool_id}.test is the unmodified scaffold; "
+            "write real assertions before promoting"
+        ]
+    return _run_test(root, tool_id, test)
+
+
 def _run_test(root: Path, tool_id: str, test: Path) -> list[str]:
     try:
         completed = _run(
@@ -432,6 +502,8 @@ def _run_test(root: Path, tool_id: str, test: Path) -> list[str]:
             f"{tool_id}: tools/{tool_id}.test did not finish within "
             f"{TEST_TIMEOUT_SECONDS}s"
         ]
+    except _OutputTooLarge as error:
+        return [f"{tool_id}: tools/{tool_id}.test {error}"]
     except OSError as error:
         return [f"{tool_id}: tools/{tool_id}.test could not run: {error}"]
     if completed.returncode != 0:

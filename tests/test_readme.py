@@ -19,6 +19,7 @@ from _support import SRC_DIR, TmtTestCase
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 _HEADING_RE = re.compile(r"^##\s+Quickstart\s*$", re.MULTILINE)
+_NEXT_HEADING_RE = re.compile(r"^##\s", re.MULTILINE)
 _BLOCK_RE = re.compile(r"^```sh\n(?P<body>.*?)^```$", re.DOTALL | re.MULTILINE)
 
 TMT_SHIM = """#!/bin/sh
@@ -27,12 +28,18 @@ exec {python} -m tmt "$@"
 
 
 def quickstart_block() -> str:
-    """The first ```sh block after the README's Quickstart heading."""
+    """The Quickstart section's first ```sh block.
+
+    The search stops at the next `## ` heading, so a block belonging to a
+    later section can never stand in for a Quickstart that lost its own.
+    """
     text = README.read_text(encoding="utf-8")
     heading = _HEADING_RE.search(text)
     if heading is None:
         raise AssertionError("README.md has no '## Quickstart' heading")
-    block = _BLOCK_RE.search(text, heading.end())
+    following = _NEXT_HEADING_RE.search(text, heading.end())
+    section = text[heading.end() : following.start() if following else None]
+    block = _BLOCK_RE.search(section)
     if block is None:
         raise AssertionError("README.md Quickstart has no ```sh block")
     return block.group("body")
@@ -55,6 +62,9 @@ class ReadmeQuickstartTest(TmtTestCase):
         )
         environment["PYTHONPATH"] = os.fspath(SRC_DIR)
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        # The block runs `mktemp -d`, so without this the directory it
+        # creates outlives the test and accumulates on every run.
+        environment["TMPDIR"] = os.fspath(workspace)
         # The block is documentation, not a test harness: -e makes any
         # silent failure inside it fail here.
         completed = subprocess.run(

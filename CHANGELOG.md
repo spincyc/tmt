@@ -28,6 +28,56 @@ into a shipped one.
   makes visible: companions are not digested, and `tmt rename` silently ends
   drift reporting for a vendored tool.
 
+### Fixed
+
+- Containment covered a primary path but not its companion or its
+  destination, in three places an independent review reproduced:
+  `tmt vendor`/`tmt adopt` wrote through a symlinked *destination* (and
+  `copymode` made the outside file executable); `tmt check` executed a
+  `tools/<id>.test` symlinked out of the repository and still reported `ok`;
+  and `tmt show` executed the tool and read its `.md` with no gate at all,
+  leaking a doc from outside the clone. Every destination and companion is
+  now resolved before use, copies are created `O_NOFOLLOW` with the mode set
+  through the descriptor, and a refusal in `tmt check` is a collected failure
+  line rather than an exception.
+- `tmt agents --write` could delete a user's own text and never converge.
+  `_splice` split lines with `str.splitlines`, which also breaks on `\x0b`,
+  `\x0c`, `\x1c`-`\x1e`, `\x85`, U+2028 and U+2029, while the locator split
+  on `\n` alone — so a form-feed page break made the two disagree about where
+  the owned block was. The module now has one notion of a line.
+- `tmt rm` and `tmt rename` checked preconditions inside the mutation loop, so
+  a refusal on the second file landed after the first had already moved,
+  leaving the registry pointing at a file that no longer existed. Both now
+  validate the whole plan first, and a failed move sequence unwinds. Relatedly,
+  refusing an out-of-repo companion *symlink* was a category error — `unlink`
+  and `rename` never follow one — and made the tool unremovable; containment
+  for those operations belongs on the `tools` directory.
+- `tmt set requires` could write a cycle, or put a draft under a stable tool —
+  exactly what `tmt check` forbids — so a command that exited 0 left the
+  repository red. The graph rules now gate the edit.
+- Two inputs still escaped the check battery to exit 70: a deeply nested
+  `tmt.json` (`json.loads` raises `RecursionError`, which is not a
+  `JSONDecodeError`) and a tool whose `--help` writes unboundedly, which
+  `communicate` bounded in time but not in bytes. Both are collected failures
+  now, the second against a 1 MiB per-stream cap that reports the truncation
+  rather than silently clipping.
+- `tmt show` reported a non-UTF-8 `tools/<id>.md` as an internal defect; it is
+  `check-failed` (exit 3). Escapes above U+FFFF were emitted as malformed
+  5-hex `\uXXXXX` sequences and now use `\UXXXXXXXX`.
+- The local note store could be committed: a registry in a subdirectory of a
+  repository wrote `.tmt/notes.jsonl` into the work tree. The fallback store
+  now carries a `.gitignore`. Resolution deliberately does *not* walk upward
+  the way git does — a stray ancestor `.git` (a dotfiles repository at `$HOME`,
+  or a `git init` left in `/tmp`) would otherwise capture an unrelated
+  repository's notes.
+- `paths.write_atomic` staged through a pid-derived filename, so a leftover
+  from a killed process wedged every later write by that pid; it now uses
+  `mkstemp`. It also fsyncs the parent directory after the rename, and both
+  writers set the mode through the open descriptor rather than by path after
+  closing it.
+- The `undeclared_composition` gate recompiled a regex per (tool, sibling)
+  pair, thrashing the pattern cache: 800 tools took 14.7s, now 0.14s.
+
 ### Changed
 
 - CI pins `actions/checkout@v7` and `actions/setup-python@v7`; the previous

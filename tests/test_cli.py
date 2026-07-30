@@ -258,6 +258,57 @@ class ShowTest(TmtTestCase):
             "config\t.doc-budgets.json,docs/budgets.toml\n", human.stdout
         )
 
+    def test_show_reports_a_non_utf8_doc_as_a_content_failure(self) -> None:
+        """A companion doc's bytes are the repo's, not a tmt defect.
+
+        The doc read was the one reader without a decode guard, so it
+        escaped to the exit-70 defect boundary.
+        """
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        (root / "tools" / "alpha.md").write_bytes(b"ok \xff\xfe\n")
+
+        result = run_tmt(root, "show", "alpha", "--json")
+
+        self.assert_json_error(result, "check-failed", 3)
+
+    def test_show_refuses_a_tool_symlinked_outside_the_repo(self) -> None:
+        """show executes the tool, so it needs the same gate as check.
+
+        `tmt check` contained the executable while `tmt show` ran it
+        ungated, executing a file the clone does not contain and printing
+        a doc from outside the repository.
+        """
+        outside = self.make_dir()
+        marker = outside / "ran"
+        planted = outside / "evil"
+        planted.write_text(
+            "#!/bin/sh\n"
+            f'touch "{marker}"\n'
+            'case "$1" in --help) echo usage; exit 0;; esac\n',
+            encoding="utf-8",
+        )
+        planted.chmod(0o755)
+        secret = outside / "secret.md"
+        secret.write_text("SECRET DOC\n", encoding="utf-8")
+        root = self.make_repo()
+        (root / "tools").mkdir(exist_ok=True)
+        (root / "tools" / "st").symlink_to(planted)
+        (root / "tools" / "st.md").symlink_to(secret)
+        data = load_registry(root)
+        data["tools"]["st"] = {
+            "purpose": "p",
+            "stage": "draft",
+            "usage": "u",
+            "lang": "sh",
+        }
+        save_registry(root, data)
+
+        result = run_tmt(root, "show", "st", "--json")
+
+        self.assert_json_error(result, "containment", 3)
+        self.assertFalse(marker.exists(), "the outside file was executed")
+
     def test_show_unknown_tool_reports_not_found(self) -> None:
         root = self.make_repo()
 

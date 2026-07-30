@@ -15,12 +15,42 @@ import unittest
 from pathlib import Path
 
 from _support import (
+    SRC_DIR,
     TmtTestCase,
     load_registry,
     run_tmt,
     save_registry,
     write_executable,
 )
+
+PLANT_STALE_STAGE = "open(f'.tmt.json.{os.getpid()}.tmt-tmp', 'w').close()"
+RESTRICTIVE_UMASK = "os.umask(0o077)"
+
+
+def run_tmt_after(
+    root: Path, prelude: str, *arguments: str
+) -> subprocess.CompletedProcess[str]:
+    """Run ``tmt`` in the same process ``prelude`` ran in.
+
+    ``os.execv`` keeps the pid and the umask, which a plain subprocess
+    cannot: the caller needs both to reach tmt's own write paths.
+    """
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.fspath(SRC_DIR)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    program = (
+        "import os, sys\n"
+        f"{prelude}\n"
+        "argv = [sys.executable, '-m', 'tmt', *sys.argv[1:]]\n"
+        "os.execv(sys.executable, argv)"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", program, *arguments],
+        cwd=os.fspath(root),
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _entry(**overrides: object) -> dict[str, object]:
@@ -193,6 +223,22 @@ class AtomicWriteTest(TmtTestCase):
         self.assertEqual(strays, [])
         self.assertIn("alpha", load_registry(root)["tools"])
 
+    def test_a_leftover_staging_file_does_not_block_the_save(self) -> None:
+        root = self.make_repo()
+
+        result = run_tmt_after(
+            root, PLANT_STALE_STAGE, "new", "alpha", "--json"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("alpha", load_registry(root)["tools"])
+        strays = [
+            item.name
+            for item in root.iterdir()
+            if item.name.endswith(".tmt-tmp")
+        ]
+        self.assertEqual(len(strays), 1, strays)
+
     def test_registry_save_preserves_an_in_repo_symlink(self) -> None:
         root = self.make_repo()
         real = root / "registry-real.json"
@@ -204,6 +250,29 @@ class AtomicWriteTest(TmtTestCase):
         self.assertIn(
             "alpha", json.loads(real.read_text(encoding="utf-8"))["tools"]
         )
+
+
+class FileModeTest(TmtTestCase):
+    def test_a_new_tool_stays_executable_under_a_tight_umask(self) -> None:
+        root = self.make_repo()
+
+        result = run_tmt_after(
+            root, RESTRICTIVE_UMASK, "new", "alpha", "--json"
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name in ("alpha", "alpha.test"):
+            mode = (root / "tools" / name).stat().st_mode & 0o777
+            self.assertEqual(oct(mode), oct(0o755), name)
+
+    def test_a_new_registry_stays_readable_under_a_tight_umask(self) -> None:
+        root = self.make_dir()
+
+        result = run_tmt_after(root, RESTRICTIVE_UMASK, "init", "--json")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mode = (root / "tmt.json").stat().st_mode & 0o777
+        self.assertEqual(oct(mode), oct(0o644))
 
 
 class RegistryValidationTest(TmtTestCase):

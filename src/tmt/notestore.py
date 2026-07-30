@@ -29,8 +29,20 @@ def _git_common_dir(root: Path) -> Path | None:
 
     ``tmt context`` reads this store on every session start, so the
     location must not depend on git being on PATH or on a subprocess.
+
+    Only the registry root is inspected, deliberately. Walking upward the
+    way git does would follow a stray ancestor ``.git`` — a dotfiles
+    repository at ``$HOME``, or a ``git init`` someone left in ``/tmp`` —
+    and write this repository's notes into an unrelated repository's git
+    directory. A registry in a subdirectory of a repository therefore
+    falls back to a local store, which ``_ensure_ignored`` keeps
+    uncommittable.
     """
-    marker = root / ".git"
+    return _git_dir_at(root)
+
+
+def _git_dir_at(directory: Path) -> Path | None:
+    marker = directory / ".git"
     if marker.is_dir():
         return marker
     if not marker.is_file():
@@ -44,7 +56,7 @@ def _git_common_dir(root: Path) -> Path | None:
         return None
     gitdir = Path(pointer[len(_GITDIR_PREFIX):].strip())
     if not gitdir.is_absolute():
-        gitdir = root / gitdir
+        gitdir = directory / gitdir
     common = gitdir / "commondir"
     if common.is_file():
         try:
@@ -92,10 +104,24 @@ def _read(root: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _ensure_ignored(directory: Path) -> None:
+    """Keep the fallback store out of a repository created around it."""
+    if directory.name != FALLBACK_DIRNAME:
+        return
+    marker = directory / ".gitignore"
+    if marker.is_symlink() or marker.exists():
+        return
+    try:
+        marker.write_text("*\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def append(root: Path, slug: str, note_text: str | None) -> int:
     """Record one note; return the slug's new count."""
     directory = state_dir(root)
     paths.make_directory(directory)
+    _ensure_ignored(directory)
     line = json.dumps(
         {"note": note_text, "slug": slug},
         ensure_ascii=False,

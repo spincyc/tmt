@@ -80,6 +80,21 @@ def _read_text(path: Path) -> str:
         raise TmtError("io-error", f"{path}: {error}") from error
 
 
+def _split_keepends(text: str) -> list[str]:
+    """``text``'s physical lines with terminators, split on ``\\n`` alone.
+
+    ``str.splitlines`` also breaks on \\x0b \\x0c \\x1c \\x1d \\x1e \\x85
+    U+2028 U+2029, which the locator never does. Two splitters would let a
+    write splice at an index the locator never chose, deleting whatever sat
+    between them, so this is the module's only notion of a line.
+    """
+    parts = text.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
 def _read_lines(path: Path) -> tuple[list[str], str]:
     """Physical lines without terminators, plus the file's line ending."""
     text = _read_text(path)
@@ -94,25 +109,16 @@ def _splice(text: str, block: str) -> str | None:
     terminator it already had, so a CRLF or mixed-ending file survives.
     ``None`` when no begin marker is present.
     """
-    physical = text.splitlines(keepends=True)
-    begin = next(
-        (
-            index
-            for index, line in enumerate(physical)
-            if _BEGIN_RE.fullmatch(line.strip())
-        ),
-        None,
+    physical = _split_keepends(text)
+    location = _locate(
+        [
+            line.removesuffix("\n").removesuffix("\r")
+            for line in physical
+        ]
     )
-    if begin is None:
+    if location is None:
         return None
-    end = next(
-        (
-            index
-            for index in range(begin + 1, len(physical))
-            if physical[index].strip() == END_MARKER
-        ),
-        None,
-    )
+    begin, end = location
     if end is None:
         return None
     newline = "\r\n" if physical[begin].endswith("\r\n") else "\n"

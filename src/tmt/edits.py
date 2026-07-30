@@ -208,6 +208,31 @@ def _parse_value(field: str, raw: str) -> Any:
     return " ".join(raw.split())
 
 
+def _requires_failures(tools: dict[str, Any], tool_id: str) -> list[str]:
+    """Gate rules a ``requires`` edit must not be able to break.
+
+    Schema validation alone let `tmt set` write a cycle, or a stable tool
+    depending on a draft — exactly what `tmt check` forbids — so a command
+    that exited 0 could leave the repository red.
+    """
+    from tmt import checks
+
+    failures = checks.cycle_failures(tools, start=tool_id)
+    effective = registry.effective(tools[tool_id])
+    if effective["stage"] != "stable":
+        return failures
+    for dependency in effective["requires"]:
+        entry = tools.get(dependency)
+        if (
+            isinstance(entry, dict)
+            and registry.effective(entry)["stage"] == "draft"
+        ):
+            failures.append(
+                f"stable tool {tool_id!r} would require draft {dependency!r}"
+            )
+    return failures
+
+
 def set_field(
     root: Path, tool_id: str, field: str, raw: str
 ) -> dict[str, Any]:
@@ -242,6 +267,9 @@ def set_field(
                 f"rejected: requires {', '.join(sorted(missing))} which "
                 "is not registered",
             )
+        gate_failures = _requires_failures(data["tools"], tool_id)
+        if gate_failures:
+            raise TmtError("check-failed", f"rejected: {gate_failures[0]}")
     registry.save(root, data)
     return {
         "field": field,

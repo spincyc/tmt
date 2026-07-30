@@ -260,11 +260,18 @@ rejected value never reaches `tmt.json`. `FIELD` is one of:
 `stage` and `origin` are deliberately absent: `tmt stage` owns promotion (it
 runs the stable battery first) and `vendor`/`adopt` own provenance.
 
+A `requires` edit is held to the graph rules `tmt check` enforces — no cycle,
+and no stable tool depending on a draft — so `set` cannot write a registry the
+battery would then reject. The other fields are validated but not gated: `lang`
+may name a language the syntax gate cannot lint, which the registry contract
+permits deliberately.
+
 | Refusal | Code |
 |---|---|
 | Unknown `FIELD`, a boolean other than `true`/`false`, a `requires` item that is not a well-formed tool id | `usage` (exit 2) |
 | A value the registry validator rejects — a `purpose` over 80 characters, an empty `lang` | `check-failed` (exit 3), prefixed `rejected: ` with the validator's own wording |
 | A `requires` id that is well-formed but not registered here | `check-failed` (exit 3) |
+| A `requires` edit that would create a cycle, or put a draft under a stable tool | `check-failed` (exit 3) |
 | Unregistered `ID` | `not-found` (exit 3) |
 
 `previous` is the effective value before the change (schema default included),
@@ -296,8 +303,14 @@ capture it. `doc` is the content of `tools/ID.md`, or `null` when absent.
 Human output is `key<TAB>value` lines for the sorted effective entry (`config`
 and `requires` comma-joined; an origin object as `repo@commit`), then each
 non-null block separated by a blank line; control characters in the captured
-help and the long doc are escaped as `\uXXXX`, so a tool cannot repaint the
-terminal through `tmt show`. An unregistered ID is `not-found` (exit 3).
+help and the long doc are escaped as `\uXXXX` (`\UXXXXXXXX` above U+FFFF), so
+a tool cannot repaint the terminal through `tmt show`. An unregistered ID is
+`not-found` (exit 3).
+
+Because `show` executes the tool and reads its doc, both must resolve inside
+the repository: one that does not is `containment` (exit 3) and nothing is
+executed or read. A non-UTF-8 `tools/ID.md` is `check-failed` (exit 3) — the
+bytes are the repository's fault, not a tmt defect.
 
 ## check
 

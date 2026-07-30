@@ -4,7 +4,7 @@ Notable user-visible changes are recorded here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions are [PEP 440](https://peps.python.org/pep-0440/) pre-releases
-(`0.1.0a5`), not [Semantic Versioning](https://semver.org/) releases: while the
+(`0.1.0a6`), not [Semantic Versioning](https://semver.org/) releases: while the
 project is alpha any release may change documented behavior, and this file is
 the record of what changed. Public compatibility — documented CLI behavior,
 exit codes, the versioned `tmt.json` registry format, and the JSON output
@@ -13,7 +13,12 @@ under `docs/contracts/` carry their own explicit versions. Changes made after a
 release accumulate in an `[Unreleased]` section rather than being backdated
 into a shipped one.
 
-## [Unreleased]
+## [0.1.0a6] - 2026-07-29
+
+The first release published to PyPI, and a second security pass: containment
+now covers each operation's companions and destinations, not only its primary
+path, and the two reviews behind these fixes were run by agents that had not
+written the code.
 
 ### Fixed
 

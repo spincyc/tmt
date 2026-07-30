@@ -1,0 +1,60 @@
+name: Release
+
+# Publishes to PyPI through Trusted Publishing (OIDC), so no API token is
+# stored anywhere. PyPI must first list this repository and this workflow
+# filename as a trusted publisher for the `tmt-toolmaker` project.
+#
+# workflow_dispatch is here deliberately: if the trusted-publisher entry is
+# not in place when a tag lands, the run fails harmlessly and can be
+# re-run from the Actions tab once it is, without cutting a new tag.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: make verify
+
+  publish:
+    name: publish to PyPI
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      # The tag and the packaged version must agree, or the artifact on
+      # PyPI would not match the tag it claims to come from.
+      - name: Check the tag matches the packaged version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          built="$(ls dist/*.tar.gz | sed -E 's/.*-([^-]+)\.tar\.gz/\1/')"
+          if [ "$tag" != "$built" ]; then
+            echo "tag $tag does not match built version $built" >&2
+            exit 1
+          fi
+      - uses: pypa/gh-action-pypi-publish@v1.14.2

@@ -66,15 +66,39 @@ def remove(
             f"cannot remove {tool_id!r}: required by "
             f"{', '.join(dependents)}; update or remove them first",
         )
-    removed: list[str] = []
+    doomed: list[Path] = []
     if not keep_files:
-        for path in _tool_files(root, tool_id):
-            paths.resolve_within(root, path, label=f"tools/{path.name}")
-            paths.unlink(path)
-            removed.append(path.name)
+        # Containing the directory is the whole rule: unlink never follows
+        # a symlink, so a companion pointing out of the repo is still the
+        # repo's own link to delete — refusing it would make the tool
+        # unremovable. Collect first so a failure cannot half-delete.
+        paths.resolve_within(root, root / "tools", label="tools directory")
+        doomed = _tool_files(root, tool_id)
+    for path in doomed:
+        paths.unlink(path)
     del data["tools"][tool_id]
     registry.save(root, data)
-    return {"id": tool_id, "removed_files": sorted(removed)}
+    return {
+        "id": tool_id,
+        "removed_files": sorted(path.name for path in doomed),
+    }
+
+
+def _apply_moves(planned: list[tuple[Path, Path]]) -> list[str]:
+    """Perform validated moves, undoing them all if one fails."""
+    done: list[tuple[Path, Path]] = []
+    for source, target in planned:
+        try:
+            paths.rename(source, target)
+        except TmtError:
+            for undo_source, undo_target in reversed(done):
+                try:
+                    paths.rename(undo_target, undo_source)
+                except TmtError:
+                    pass
+            raise
+        done.append((source, target))
+    return [target.name for _, target in done]
 
 
 def rename(root: Path, tool_id: str, new_id: str) -> dict[str, Any]:
@@ -93,14 +117,18 @@ def rename(root: Path, tool_id: str, new_id: str) -> dict[str, Any]:
             "already-exists",
             f"tool {new_id!r} is already registered in tmt.json",
         )
-    moved: list[str] = []
+    # Plan every move before making one: a refusal on the companion must
+    # not leave the executable already renamed, which would leave the
+    # repository in a state `tmt check` rejects.
+    # rename never follows a symlink either, so as with remove the rule is
+    # that the directory is contained; the link itself is the repo's to move.
+    paths.resolve_within(root, root / "tools", label="tools directory")
+    planned: list[tuple[Path, Path]] = []
     for path in _tool_files(root, tool_id):
-        paths.resolve_within(root, path, label=f"tools/{path.name}")
         target = path.with_name(new_id + path.name[len(tool_id):])
-        paths.resolve_within(root, target, label=f"tools/{target.name}")
         paths.refuse_existing(target)
-        paths.rename(path, target)
-        moved.append(target.name)
+        planned.append((path, target))
+    moved = _apply_moves(planned)
     tools = data["tools"]
     del tools[tool_id]
     tools[new_id] = entry

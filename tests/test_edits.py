@@ -47,6 +47,61 @@ class RemoveTest(TmtTestCase):
         self.assertIn("required by user", payload["error"])
         self.assertIn("base", load_registry(root)["tools"])
 
+    def test_rm_deletes_a_companion_symlink_without_its_target(self) -> None:
+        """Unlink never follows, so the link is the repo's to delete.
+
+        Refusing it on containment grounds would make the tool
+        unremovable while leaving the link in place.
+        """
+        outside = self.make_dir()
+        planted = outside / "notes.md"
+        planted.write_text("outside\n", encoding="utf-8")
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        (root / "tools" / "alpha.md").symlink_to(planted)
+
+        payload = self.assert_json_success(
+            run_tmt(root, "rm", "alpha", "--json")
+        )
+
+        self.assertEqual(
+            payload["removed_files"], ["alpha", "alpha.md", "alpha.test"]
+        )
+        self.assertFalse((root / "tools" / "alpha.md").is_symlink())
+        self.assertEqual(planted.read_text(encoding="utf-8"), "outside\n")
+        self.assertEqual(load_registry(root)["tools"], {})
+        self.assertEqual(self.check_json(root)[0], 0)
+
+    def test_rm_refuses_a_tools_directory_outside_the_repo(self) -> None:
+        outside = self.make_dir()
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        (root / "tools" / "alpha").rename(outside / "alpha")
+        (root / "tools" / "alpha.test").rename(outside / "alpha.test")
+        (root / "tools").rmdir()
+        (root / "tools").symlink_to(outside)
+
+        self.assert_json_error(
+            run_tmt(root, "rm", "alpha", "--json"), "containment", 3
+        )
+        self.assertTrue((outside / "alpha").exists())
+
+    def test_rm_refusal_by_dependent_keeps_the_files(self) -> None:
+        root = self.make_repo()
+        for tool_id in ("base", "user"):
+            self.assertEqual(run_tmt(root, "new", tool_id).returncode, 0)
+        self.assertEqual(
+            run_tmt(root, "set", "user", "requires", "base").returncode, 0
+        )
+
+        self.assert_json_error(
+            run_tmt(root, "rm", "base", "--json"), "check-failed", 3
+        )
+
+        self.assertTrue((root / "tools" / "base").exists())
+        self.assertTrue((root / "tools" / "base.test").exists())
+        self.assertEqual(self.check_json(root)[0], 0)
+
     def test_rm_unknown_tool_is_not_found(self) -> None:
         root = self.make_repo()
         self.assert_json_error(
@@ -122,6 +177,28 @@ class RenameTest(TmtTestCase):
             run_tmt(root, "rename", "alpha", "beta", "--json")
         )
         self.assertEqual(payload["stale_callers"], [])
+
+    def test_rename_refusal_moves_nothing(self) -> None:
+        """A colliding companion must not leave the executable renamed.
+
+        Moving each file as it was validated renamed `tools/alpha` before
+        the `tools/beta.test` collision was noticed, leaving the registry
+        pointing at a file that no longer existed.
+        """
+        root = self.make_repo()
+        self.assertEqual(run_tmt(root, "new", "alpha").returncode, 0)
+        collision = root / "tools" / "beta.test"
+        collision.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+        result = run_tmt(root, "rename", "alpha", "beta", "--json")
+
+        self.assert_json_error(result, "already-exists", 3)
+        self.assertTrue((root / "tools" / "alpha").exists())
+        self.assertTrue((root / "tools" / "alpha.test").exists())
+        self.assertFalse((root / "tools" / "beta").exists())
+        self.assertIn("alpha", load_registry(root)["tools"])
+        # A stray companion is not a stray tool, so the repo stays green.
+        self.assertEqual(self.check_json(root)[:2], (0, []))
 
     def test_rename_refuses_an_existing_id(self) -> None:
         root = self.make_repo()
